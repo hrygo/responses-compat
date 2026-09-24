@@ -171,7 +171,8 @@ case_id、rule_id、核实日期、组件版本、模型/路由范围、模式�
 
 ## 当前离线实现检查点（2026-09-24）
 
-- Task 1–2 的独立修复提交：`a7ce48f`、`8a577c6`；策略隔离提交：`27fefed`；严格配置及 HTTP 传输边界提交：`7b4d855`。Task 6 的身份/文档整理尚未提交。
-- 截至此检查点，`go test ./... -count=1` 与 `go test -race ./... -count=1` 均为 146 项通过，`go vet ./...` 通过。验证使用本机 Go 1.27.1 / darwin-arm64；这只证明本地测试实现。
-- 没有主动发出真实 Muse/OpenCode Go 请求，没有执行 OpenCode CLI/App 直连对照，没有安装或切换本机 LaunchAgent，也没有移动工作目录、合并、推送、打标签或发布。
+- Task 1–2 的独立修复提交：a7ce48f、8a577c6；策略隔离提交：27fefed；严格配置及 HTTP 传输边界提交：7b4d855；更名与离线交付提交：a108549。
+- 在干净代码提交 a1085497b2184c4c28e184d5a4e94888ac83d8f9 上执行 go test ./... -count=1 与 go test -race ./... -count=1，分别 146 项通过；go vet ./... 通过。Go 1.27.1 / darwin-arm64。
+- 离线二进制 SHA-256：c7ad523b7f3758310a8975c54131d4cb49c30f0a76db402aeda43156084327f6；go version -m 显示 source revision a1085497b2184c4c28e184d5a4e94888ac83d8f9 且 vcs.modified=false。
+- 代码提交 a108549 已 fast-forward 合并到本地 main，后续仅追加了文档验证记录；未配置 Git remote，因此未推送或发布。没有真实上游调用、CLI/App 直连对照或本机服务切换；v0.1.0 标签保持不变。
 - 因此 `$ref` 修复后的上游接受性、Muse Responses 的实际 Schema/名称限制、CLI/App 是否能直接使用 Muse，以及当前运行服务状态仍未验证。不得将本地 146 项通过描述为服务端兼容或发布验收通过。

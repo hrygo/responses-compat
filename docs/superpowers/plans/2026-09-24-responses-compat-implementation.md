@@ -14,7 +14,7 @@
 
 **Evidence:** `docs/compatibility/2026-09-24-evidence-register.md`
 
-**Date / status:** 2026-09-24；离线实现与验收中（分支 codex/responses-compat）。Task 1–2 已提交 a7ce48f、8a577c6；Task 3 提交 27fefed；Task 4–5 因共享 server.go 合并为一个原子提交 7b4d855。当前全量测试 146 项、race 146 项、vet 均通过。Task 6 身份与文档更新待提交，清洁提交后的离线构建待重做。工作区尚未合并。真实上游调用、运行服务切换和版本发布保持独立授权门；现有 v0.1.0 标签不移动。
+**Date / status:** 2026-09-24；Task 1–6 离线工作已提交并验证。代码提交 a1085497b2184c4c28e184d5a4e94888ac83d8f9 已 fast-forward 到本地 main；其后的最终证据记录仅改文档。146 项全量/race 测试和 vet 均通过，清洁提交构建已完成。没有配置 Git remote，故未推送/发布；没有真实上游请求或服务切换；v0.1.0 标签不动。
 
 ## Global Constraints
 
@@ -54,8 +54,8 @@
 
 1. **已完成并提交：** Task 1 修复 Schema 引用与相邻字段的误拒绝；Task 2 限定工具名恢复范围并把完整 SSE 帧计入预算。提交 a7ce48f、8a577c6。
 2. **已实现并提交：** Task 3 保留有价值的 compatibility_test.go 并完成策略隔离，提交 27fefed；Task 4–5 完成严格配置、实例隔离和 HTTP 边界，因共用 handler 文件合并提交 7b4d855。
-3. **离线候选：** Task 6 已更名代码身份、更新 README/CHANGELOG、加入无凭据配置示例和部署回退清单。Task 6 提交及干净工作区构建仍待完成。
-4. **未执行：** 未调用真实上游、未安装/切换服务、未迁移工作目录、未合并/推送/打标签/发布。旧 `v0.1.0` 仍保留；`v0.2.0` 只能是待证候选，真实兼容性仍未知。
+3. **离线候选：** Task 6 已提交 a108549，并在清洁工作区完成验证构建；二进制仍是离线候选，不是已安装/已发布版本。
+4. **未执行：** 代码分支已 fast-forward 合并到本地 main；没有配置 remote，未推送/发布/打标签，未调用真实上游、未安装/切换服务、未迁移工作目录。旧 v0.1.0 保留；v0.2.0 仍待真实对照和发布目标。
 
 ## Review Focus
 
@@ -355,7 +355,7 @@ func TestUnknownSuccessMediaWithAliasesFailsClosed(t *testing.T) {
 - [x] **6.2 更新身份。** go.mod、CLI/log 前缀及构建说明已使用 responses-compat；CHANGELOG 以 Unreleased 记录，保留 v0.1.0 历史且不宣称真实兼容通过。
 - [x] **6.3 添加配置示例。** 两份无凭据示例与预期 profile/listen 一致，并由自动测试解析验证。
 - [x] **6.4 README/部署文档。** 记录可配置机制、默认有损行为、未验证边界和授权后的备份/切换/验证/回退流程。
-- [ ] **6.5 全量验证后提交并构建。** 提交 `refactor: rename project to Responses Compat` 后，在确认没有未知源代码改动时执行：
+- [x] **6.5 全量验证后提交并构建。** 提交 a108549 后执行全量、race、vet 和清洁工作区构建，均通过。
 
 ```sh
 go test ./... -count=1
@@ -369,7 +369,7 @@ go version -m "$ARTIFACT_DIR/responses-compat"
 shasum -a 256 "$ARTIFACT_DIR/responses-compat"
 ```
 
-预期 module 为 responses-compat；记录实际 Go/平台、提交、vcs.modified 和 SHA-256。候选构建不是已安装版本，不能写成服务已更新。
+实测：module responses-compat；Go 1.27.1 darwin/arm64；source commit a1085497b2184c4c28e184d5a4e94888ac83d8f9；vcs.modified=false；SHA-256 c7ad523b7f3758310a8975c54131d4cb49c30f0a76db402aeda43156084327f6。候选构建不是已安装版本，不能写成服务已更新。
 
 ## Task 7：授权后再做真实对照、服务迁移和发布
 

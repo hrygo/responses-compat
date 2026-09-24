@@ -59,6 +59,52 @@ func TestHandlerNormalizesAndForwardsMuseRequest(t *testing.T) {
 	}
 }
 
+func TestHandlerRemovesReasoningItemIDsAndPreservesEncryptedPayload(t *testing.T) {
+	forwardedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read forwarded body: %v", err)
+		}
+		forwardedBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"status":"completed","output":[]}`)
+	}))
+	defer upstream.Close()
+	base, _ := url.Parse(upstream.URL)
+	front := httptest.NewServer(NewHandler(base, upstream.Client()))
+	defer front.Close()
+
+	body := `{"model":"muse-spark-1.3-contributor","input":[{"type":"reasoning","id":"rs_expired","encrypted_content":"opaque-reasoning-data","summary":[{"type":"summary_text","text":"preserve this summary"}]},{"type":"function_call_output","call_id":"call-1","output":"MUSE_TOOL_E2E_OK"}]}`
+	resp, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	got := decodeObject(t, <-forwardedBody)
+	input := got["input"].([]any)
+	reasoning := input[0].(map[string]any)
+	if _, exists := reasoning["id"]; exists {
+		t.Fatalf("unstable reasoning item id was forwarded: %#v", reasoning)
+	}
+	if reasoning["encrypted_content"] != "opaque-reasoning-data" {
+		t.Fatalf("encrypted reasoning payload changed: %#v", reasoning)
+	}
+	summary := reasoning["summary"].([]any)[0].(map[string]any)
+	if summary["text"] != "preserve this summary" {
+		t.Fatalf("reasoning summary changed: %#v", summary)
+	}
+	toolOutput := input[1].(map[string]any)
+	if toolOutput["call_id"] != "call-1" || toolOutput["output"] != "MUSE_TOOL_E2E_OK" {
+		t.Fatalf("tool output changed: %#v", toolOutput)
+	}
+}
+
 func TestHandlerPreservesUpstreamErrorStatusAndBody(t *testing.T) {
 	for _, status := range []int{http.StatusBadRequest, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -71,7 +117,9 @@ func TestHandlerPreservesUpstreamErrorStatusAndBody(t *testing.T) {
 			base, _ := url.Parse(upstream.URL)
 			front := httptest.NewServer(NewHandler(base, upstream.Client()))
 			defer front.Close()
-			resp, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(`{"model":"muse-spark-1.3-contributor","input":"ping"}`))
+			longName := "mcp__codex_apps__codex_document_control___execute_document_command"
+			requestBody := `{"model":"` + museModel + `","input":"ping","tools":[{"type":"function","name":"` + longName + `","parameters":{"type":"object"}}]}`
+			resp, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(requestBody))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -365,5 +413,200 @@ func TestHandlerStreamsBeforeUpstreamCompletesAndPropagatesCancel(t *testing.T) 
 	case <-upstreamCancelled:
 	case <-time.After(5 * time.Second):
 		t.Fatal("client cancellation did not reach upstream")
+	}
+}
+
+func TestHandlerAliasesLongToolNamesAndRestoresJSONFunctionCall(t *testing.T) {
+	longName := "mcp__codex_apps__codex_document_control___execute_document_command"
+	alias := functionToolAlias(longName)
+	upstreamBodyCh := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBodyCh <- string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"completed","output":[{"type":"function_call","name":"`+alias+`","call_id":"call-1","arguments":"{}"}]}`)
+	}))
+	defer upstream.Close()
+	base, _ := url.Parse(upstream.URL + "/v1")
+	front := httptest.NewServer(NewHandler(base, upstream.Client()))
+	defer front.Close()
+
+	requestBody := `{"model":"` + museModel + `","tools":[{"type":"function","name":"` + longName + `","parameters":{"type":"object"}}],"tool_choice":{"type":"function","name":"` + longName + `"}}`
+	resp, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, responseBody)
+	}
+	upstreamBody := <-upstreamBodyCh
+	if strings.Contains(upstreamBody, longName) || !strings.Contains(upstreamBody, alias) {
+		t.Fatalf("upstream tool name was not shortened: contains_original=%v contains_alias=%v", strings.Contains(upstreamBody, longName), strings.Contains(upstreamBody, alias))
+	}
+	if !strings.Contains(string(responseBody), `"name":"`+longName+`"`) || strings.Contains(string(responseBody), `"name":"`+alias+`"`) {
+		t.Fatalf("client response name was not restored: %s", responseBody)
+	}
+}
+
+func TestHandlerRestoresLongToolNamesInSSEEvents(t *testing.T) {
+	longName := "mcp__codex_apps__codex_document_control___execute_document_command"
+	alias := functionToolAlias(longName)
+	upstreamBodyCh := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBodyCh <- string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"name\":\""+alias+"\",\"call_id\":\"call-1\"}}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"name\":\""+alias+"\",\"call_id\":\"call-1\",\"arguments\":\"{}\"}]}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	base, _ := url.Parse(upstream.URL + "/v1")
+	front := httptest.NewServer(NewHandler(base, upstream.Client()))
+	defer front.Close()
+
+	requestBody := `{"model":"` + museModel + `","tools":[{"type":"function","name":"` + longName + `","parameters":{"type":"object"}}],"stream":true}`
+	req, err := http.NewRequest(http.MethodPost, front.URL+"/v1/responses", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := front.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstreamBody := <-upstreamBodyCh
+	if resp.StatusCode != http.StatusOK || !strings.Contains(upstreamBody, alias) || strings.Contains(upstreamBody, longName) {
+		t.Fatalf("status=%d upstream_short_name=%v", resp.StatusCode, strings.Contains(upstreamBody, alias) && !strings.Contains(upstreamBody, longName))
+	}
+	if !strings.Contains(string(responseBody), `"name":"`+longName+`"`) || strings.Contains(string(responseBody), `"name":"`+alias+`"`) || !strings.Contains(string(responseBody), "data: [DONE]") {
+		t.Fatalf("SSE names or terminator were not preserved: %s", responseBody)
+	}
+}
+
+func TestHandlerRejectsExpandedJSONResponseOverRewriteLimit(t *testing.T) {
+	longName := strings.Repeat("x", 1<<20)
+	alias := functionToolAlias(longName)
+	responseBody := expandedAliasResponse(alias, maxResponseRewriteBytes/(1<<20)+1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(responseBody)
+	}))
+	defer upstream.Close()
+	base, _ := url.Parse(upstream.URL + "/v1")
+	front := httptest.NewServer(NewHandler(base, upstream.Client()))
+	defer front.Close()
+
+	requestBody := `{"model":"` + museModel + `","tools":[{"type":"function","name":"` + longName + `","parameters":{"type":"object"}}]}`
+	resp, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusBadGateway || strings.Contains(string(got), alias) || strings.Contains(string(got), longName) {
+		t.Fatalf("status=%d alias_leaked=%v response_bytes=%d", resp.StatusCode, strings.Contains(string(got), alias), len(got))
+	}
+}
+
+func TestHandlerEmitsSSEErrorForExpandedEventOverRewriteLimit(t *testing.T) {
+	longName := strings.Repeat("x", 1<<20)
+	alias := functionToolAlias(longName)
+	responseBody := expandedAliasResponse(alias, maxSSEFrameBytes/(1<<20)+1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: ")
+		_, _ = w.Write(responseBody)
+		_, _ = io.WriteString(w, "\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	base, _ := url.Parse(upstream.URL + "/v1")
+	front := httptest.NewServer(NewHandler(base, upstream.Client()))
+	defer front.Close()
+
+	requestBody := `{"model":"` + museModel + `","tools":[{"type":"function","name":"` + longName + `","parameters":{"type":"object"}}],"stream":true}`
+	req, err := http.NewRequest(http.MethodPost, front.URL+"/v1/responses", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := front.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(got), "event: response.failed") || !strings.Contains(string(got), "\"type\":\"response.failed\"") || strings.Contains(string(got), alias) || strings.Contains(string(got), "[DONE]") {
+		t.Fatalf("status=%d alias_leaked=%v response_bytes=%d", resp.StatusCode, strings.Contains(string(got), alias), len(got))
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (roundTripper roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTripper(request)
+}
+
+type failingReadCloser struct {
+	data []byte
+	done bool
+}
+
+func (body *failingReadCloser) Read(dst []byte) (int, error) {
+	if body.done {
+		return 0, io.EOF
+	}
+	body.done = true
+	return copy(dst, body.data), io.ErrUnexpectedEOF
+}
+
+func (body *failingReadCloser) Close() error { return nil }
+
+func TestHandlerRejectsPartialJSONWhenUpstreamReadFails(t *testing.T) {
+	longName := "mcp__codex_apps__codex_document_control___execute_document_command"
+	alias := functionToolAlias(longName)
+	upstream, _ := url.Parse("https://opencode.invalid/v1")
+	client := &http.Client{Transport: roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Content-Type", "application/json")
+		partialBody := []byte(`{"output":[{"type":"function_call","name":"` + alias)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     header,
+			Body:       &failingReadCloser{data: partialBody},
+		}, nil
+	})}
+	front := httptest.NewServer(NewHandler(upstream, client))
+	defer front.Close()
+
+	requestBody := `{"model":"` + museModel + `","tools":[{"type":"function","name":"` + longName + `","parameters":{"type":"object"}}]}`
+	resp, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusBadGateway || strings.Contains(string(got), alias) {
+		t.Fatalf("status=%d alias_leaked=%v response_bytes=%d", resp.StatusCode, strings.Contains(string(got), alias), len(got))
 	}
 }

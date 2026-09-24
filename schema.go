@@ -17,38 +17,57 @@ const (
 )
 
 func NormalizeRequest(data []byte) ([]byte, error) {
+	normalized, _, err := normalizeRequestWithToolNames(data)
+	return normalized, err
+}
+
+func normalizeRequestWithToolNames(data []byte) ([]byte, *toolNameAliases, error) {
 	if len(data) == 0 || len(data) > maxRequestBytes {
-		return nil, errors.New("request size out of range")
+		return nil, nil, errors.New("request size out of range")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	var request map[string]any
 	if err := decoder.Decode(&request); err != nil {
-		return nil, errors.New("invalid JSON request")
+		return nil, nil, errors.New("invalid JSON request")
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return nil, errors.New("request contains trailing JSON")
+		return nil, nil, errors.New("request contains trailing JSON")
 	}
 	if request == nil || request["model"] != museModel {
-		return nil, errors.New("unsupported model")
+		return nil, nil, errors.New("unsupported model")
 	}
+
+	aliases, err := buildToolNameAliases(request)
+	if err != nil {
+		return nil, nil, err
+	}
+	aliases.rewriteRequest(request)
 
 	budget := &schemaBudget{limit: maxRequestBytes}
 	if tools, exists := request["tools"]; exists {
 		if err := normalizeToolTree(tools, budget); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if input, ok := request["input"].([]any); ok {
 		for _, item := range input {
 			entry, ok := item.(map[string]any)
-			if !ok || entry["type"] != "additional_tools" {
+			if !ok {
+				continue
+			}
+			if entry["type"] == "reasoning" {
+				// The OpenCode Go route may not retain provider-scoped reasoning IDs across tool turns.
+				// Keep encrypted_content and summary for stateless replay; remove only the unstable ID.
+				delete(entry, "id")
+			}
+			if entry["type"] != "additional_tools" {
 				continue
 			}
 			if tools, exists := entry["tools"]; exists {
 				if err := normalizeToolTree(tools, budget); err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			}
 		}
@@ -58,13 +77,13 @@ func NormalizeRequest(data []byte) ([]byte, error) {
 	encoder := json.NewEncoder(&out)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(request); err != nil {
-		return nil, errors.New("could not encode normalized request")
+		return nil, nil, errors.New("could not encode normalized request")
 	}
 	encoded := bytes.TrimSuffix(out.Bytes(), []byte("\n"))
 	if len(encoded) > maxRequestBytes {
-		return nil, errors.New("normalized request exceeds size limit")
+		return nil, nil, errors.New("normalized request exceeds size limit")
 	}
-	return append([]byte(nil), encoded...), nil
+	return append([]byte(nil), encoded...), aliases, nil
 }
 
 type schemaBudget struct {

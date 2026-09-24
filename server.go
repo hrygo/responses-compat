@@ -51,7 +51,7 @@ func serveResponses(w http.ResponseWriter, r *http.Request, upstream *url.URL, c
 		writeJSONError(w, http.StatusBadRequest, "unsupported model")
 		return
 	}
-	payload, err := NormalizeRequest(body)
+	payload, aliases, err := normalizeRequestWithToolNames(body)
 	if err != nil {
 		writeJSONError(w, http.StatusUnprocessableEntity, "invalid Muse Responses request")
 		return
@@ -97,13 +97,44 @@ func serveResponses(w http.ResponseWriter, r *http.Request, upstream *url.URL, c
 		return
 	}
 	defer resp.Body.Close()
+	isSSE := strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
+	isJSON := strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "json")
+	canRewriteSuccess := resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices
+	if aliases.hasAliases() && canRewriteSuccess && isJSON && !isSSE {
+		responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseRewriteBytes+1))
+		if readErr != nil {
+			writeJSONError(w, http.StatusBadGateway, "could not read Muse response")
+			return
+		}
+		if len(responseBody) > maxResponseRewriteBytes {
+			writeJSONError(w, http.StatusBadGateway, "Muse response exceeds tool-name rewrite size limit")
+			return
+		}
+		rewritten, _, rewriteErr := restoreToolNamesInJSON(responseBody, aliases.toClient, maxResponseRewriteBytes)
+		if rewriteErr != nil {
+			writeJSONError(w, http.StatusBadGateway, "Muse response could not be safely rewritten")
+			return
+		}
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(rewritten)
+		return
+	}
+
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-
-	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+	if isSSE {
 		flusher, canFlush := w.(http.Flusher)
 		if canFlush {
 			flusher.Flush()
+		}
+		if aliases.hasAliases() && canRewriteSuccess {
+			var eventFlusher http.Flusher
+			if canFlush {
+				eventFlusher = flusher
+			}
+			_ = streamSSEWithToolNameRestore(w, resp.Body, eventFlusher, aliases.toClient)
+			return
 		}
 		_, _ = io.CopyBuffer(flushWriter{writer: w, flusher: flusher, enabled: canFlush}, resp.Body, make([]byte, 32<<10))
 		return

@@ -175,3 +175,38 @@ func TestNormalizeRequestEnforcesSizeAndDepth(t *testing.T) {
 		t.Fatal("expected size rejection")
 	}
 }
+
+func TestNormalizeRequestAliasesOverlongFunctionToolNames(t *testing.T) {
+	longName := "mcp__codex_apps__codex_document_control___execute_document_command"
+	if len(longName) <= maxFunctionToolNameLength {
+		t.Fatalf("fixture name length=%d; want over limit", len(longName))
+	}
+	request := map[string]any{
+		"model": museModel,
+		"tools": []any{map[string]any{
+			"type":       "function",
+			"name":       longName,
+			"parameters": map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}},
+		}},
+		"tool_choice": map[string]any{"type": "function", "name": longName},
+		"input":       []any{map[string]any{"type": "function_call", "call_id": "call-1", "name": longName, "arguments": "{}"}},
+	}
+	input, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := NormalizeRequest(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeObject(t, normalized)
+	toolName := got["tools"].([]any)[0].(map[string]any)["name"].(string)
+	choiceName := got["tool_choice"].(map[string]any)["name"].(string)
+	inputName := got["input"].([]any)[0].(map[string]any)["name"].(string)
+	if toolName == longName || len(toolName) > maxFunctionToolNameLength {
+		t.Fatalf("overlong tool name was not aliased: len=%d", len(toolName))
+	}
+	if choiceName != toolName || inputName != toolName {
+		t.Fatalf("related names diverged: tool=%q choice=%q input=%q", toolName, choiceName, inputName)
+	}
+}

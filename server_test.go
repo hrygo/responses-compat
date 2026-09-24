@@ -332,6 +332,16 @@ func TestHandlerHealthzIsLocalAndNoContent(t *testing.T) {
 	}
 }
 
+func TestNewHandlerWithNilUpstreamFailsClosed(t *testing.T) {
+	handler := NewHandler(nil, nil)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"`+museModel+`","input":"ping"}`))
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("nil upstream unexpectedly selected a default route: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestHandlerDoesNotFollowUpstreamRedirect(t *testing.T) {
 	var redirectTargetCalled atomic.Bool
 	redirectTarget := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -553,7 +563,7 @@ func TestHandlerEmitsSSEErrorForExpandedEventOverRewriteLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(got), "event: response.failed") || !strings.Contains(string(got), "\"type\":\"response.failed\"") || strings.Contains(string(got), alias) || strings.Contains(string(got), "[DONE]") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(got), "event: response.failed") || !strings.Contains(string(got), "\"type\":\"response.failed\"") || !strings.Contains(string(got), "resp_responses_compat_error_") || !strings.Contains(string(got), "upstream response could not be safely rewritten") || strings.Contains(string(got), alias) || strings.Contains(string(got), "[DONE]") {
 		t.Fatalf("status=%d alias_leaked=%v response_bytes=%d", resp.StatusCode, strings.Contains(string(got), alias), len(got))
 	}
 }
@@ -608,6 +618,201 @@ func TestHandlerRejectsPartialJSONWhenUpstreamReadFails(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusBadGateway || strings.Contains(string(got), alias) {
 		t.Fatalf("status=%d alias_leaked=%v response_bytes=%d", resp.StatusCode, strings.Contains(string(got), alias), len(got))
+	}
+}
+
+func TestUnknownSuccessMediaWithAliasesFailsClosed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("X-Request-Id", "must-not-commit")
+		_, _ = io.WriteString(w, "synthetic upstream text")
+	}))
+	defer upstream.Close()
+	base, err := url.Parse(upstream.URL + "/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(NewHandler(base, upstream.Client()))
+	defer front.Close()
+
+	longName := strings.Repeat("x", maxFunctionToolNameLength+1)
+	body := `{"model":"` + museModel + `","tools":[{"type":"function","name":"` + longName + `","parameters":{"type":"object"}}]}`
+	resp, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%q", resp.StatusCode, got)
+	}
+	if strings.Contains(string(got), "synthetic upstream text") || strings.Contains(string(got), "muse_") {
+		t.Fatalf("upstream body or internal alias leaked: %q", got)
+	}
+	if header := resp.Header.Get("X-Request-Id"); header != "" {
+		t.Fatalf("upstream response headers were committed before rejecting media type: %q", header)
+	}
+}
+
+func TestConfiguredHandlerFiltersConnectionNominatedHeaders(t *testing.T) {
+	type observed struct {
+		traceID         string
+		privateHop      string
+		connection      string
+		authorization   string
+		contentEncoding string
+	}
+	got := make(chan observed, 1)
+	config := defaultConfig()
+	config.UpstreamBaseURL = "https://upstream.example/v1"
+	config.Profile = "passthrough"
+	config.Policy = passthroughPolicy()
+	config.ExtraRequestHeaders = []string{"X-Trace-Id", "X-Private-Hop"}
+	config.ExtraResponseHeaders = []string{"X-Upstream-Trace", "X-Private-Response"}
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Content-Type", "application/json")
+		header.Set("Content-Length", "10")
+		header.Set("Content-Encoding", "gzip")
+		header.Set("X-Upstream-Trace", "visible")
+		header.Set("Connection", "X-Private-Response")
+		header.Set("X-Private-Response", "must-not-leak")
+		got <- observed{
+			traceID:         request.Header.Get("X-Trace-Id"),
+			privateHop:      request.Header.Get("X-Private-Hop"),
+			connection:      request.Header.Get("Connection"),
+			authorization:   request.Header.Get("Authorization"),
+			contentEncoding: request.Header.Get("Content-Encoding"),
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(`{"id":"ok"}`)), Request: request}, nil
+	})}
+	handler, err := NewConfiguredHandler(config, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"`+museModel+`","input":"ping"}`))
+	request.Header.Set("Connection", "X-Private-Hop, Authorization")
+	request.Header.Set("X-Trace-Id", "trace-1")
+	request.Header.Set("X-Private-Hop", "must-not-forward")
+	request.Header.Set("Authorization", "Bearer synthetic-secret")
+	request.Header.Set("Content-Encoding", "gzip")
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case observation := <-got:
+		if observation.traceID != "trace-1" || observation.privateHop != "" || observation.connection != "" || observation.authorization != "" || observation.contentEncoding != "" {
+			t.Fatalf("request headers were not safely filtered: %+v", observation)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream request was not observed")
+	}
+	if got := recorder.Header().Get("X-Upstream-Trace"); got != "visible" {
+		t.Fatalf("configured response header=%q", got)
+	}
+	if got := recorder.Header().Get("X-Private-Response"); got != "" {
+		t.Fatalf("Connection-nominated response header leaked: %q", got)
+	}
+	if got := recorder.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("upstream Content-Length leaked: %q", got)
+	}
+	if got := recorder.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("upstream Content-Encoding leaked: %q", got)
+	}
+}
+
+func TestUnknownSuccessMediaWithoutAliasesPassesThrough(t *testing.T) {
+	const body = "synthetic upstream text"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+	base, err := url.Parse(upstream.URL + "/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(NewHandler(base, upstream.Client()))
+	defer front.Close()
+
+	resp, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(`{"model":"`+museModel+`","input":"ping"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(got) != body {
+		t.Fatalf("status=%d body=%q", resp.StatusCode, got)
+	}
+}
+
+func TestNon2xxUnknownMediaWithAliasesPassesThrough(t *testing.T) {
+	const body = "synthetic upstream rejection"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+	base, err := url.Parse(upstream.URL + "/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(NewHandler(base, upstream.Client()))
+	defer front.Close()
+
+	longName := strings.Repeat("x", maxFunctionToolNameLength+1)
+	requestBody := `{"model":"` + museModel + `","tools":[{"type":"function","name":"` + longName + `","parameters":{"type":"object"}}]}`
+	resp, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusUnprocessableEntity || string(got) != body {
+		t.Fatalf("status=%d body=%q", resp.StatusCode, got)
+	}
+}
+
+func TestVendorJSONMediaRewritesToolNameAliases(t *testing.T) {
+	longName := strings.Repeat("x", maxFunctionToolNameLength+1)
+	alias := functionToolAlias(longName)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.example.response+json; charset=utf-8")
+		_, _ = io.WriteString(w, `{"output":[{"type":"function_call","name":"`+alias+`"}]}`)
+	}))
+	defer upstream.Close()
+	base, err := url.Parse(upstream.URL + "/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(NewHandler(base, upstream.Client()))
+	defer front.Close()
+
+	requestBody := `{"model":"` + museModel + `","tools":[{"type":"function","name":"` + longName + `","parameters":{"type":"object"}}]}`
+	resp, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(got), longName) || strings.Contains(string(got), alias) {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, got)
 	}
 }
 

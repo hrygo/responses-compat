@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,18 +20,47 @@ const (
 )
 
 func main() {
-	upstream, err := url.Parse(upstreamBase)
-	if err != nil {
-		log.Fatalf("invalid fixed upstream URL: %v", err)
+	if err := runCommand(os.Args[1:], os.Stderr, runServer); err != nil {
+		fmt.Fprintf(os.Stderr, "responses-compat: %v\n", err)
+		os.Exit(1)
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = 90 * time.Second
-	client := &http.Client{Transport: transport}
+}
 
-	logger := log.New(os.Stderr, "muse-codex-adapter: ", log.LstdFlags)
+func runCommand(args []string, stderr io.Writer, start func(RuntimeConfig) error) error {
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	flags := flag.NewFlagSet("responses-compat", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	configPath := flags.String("config", "", "path to the JSON configuration file")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if flags.NArg() > 0 {
+		return fmt.Errorf("unexpected positional argument %q", flags.Arg(0))
+	}
+	if start == nil {
+		return errors.New("server startup callback is required")
+	}
+	config, err := loadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	return start(config)
+}
+
+func runServer(config RuntimeConfig) error {
+	handler, err := NewConfiguredHandler(config, newUpstreamClient())
+	if err != nil {
+		return err
+	}
+	logger := log.New(os.Stderr, "responses-compat: ", log.LstdFlags)
 	server := &http.Server{
-		Addr:              listenAddress,
-		Handler:           NewHandler(upstream, client),
+		Addr:              config.Listen,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       90 * time.Second,
 		MaxHeaderBytes:    1 << 20,
@@ -37,8 +68,9 @@ func main() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -47,8 +79,18 @@ func main() {
 		}
 	}()
 
-	logger.Printf("listening on %s", listenAddress)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Fatalf("server stopped: %v", err)
+	logger.Printf("listening on %s", config.Listen)
+	err = server.ListenAndServe()
+	stop()
+	<-shutdownDone
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
 	}
+	return err
+}
+
+func newUpstreamClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 90 * time.Second
+	return &http.Client{Transport: transport}
 }

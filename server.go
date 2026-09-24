@@ -102,6 +102,9 @@ func serveResponses(w http.ResponseWriter, r *http.Request, upstream *url.URL, c
 
 	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
 		flusher, canFlush := w.(http.Flusher)
+		if canFlush {
+			flusher.Flush()
+		}
 		_, _ = io.CopyBuffer(flushWriter{writer: w, flusher: flusher, enabled: canFlush}, resp.Body, make([]byte, 32<<10))
 		return
 	}

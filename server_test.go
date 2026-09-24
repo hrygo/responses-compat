@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -151,6 +152,71 @@ func TestHandlerStreamsSSEErrorEventUnchanged(t *testing.T) {
 	got := line + string(remaining)
 	if resp.StatusCode != http.StatusOK || got != first+second {
 		t.Fatalf("status=%d stream=%q", resp.StatusCode, got)
+	}
+}
+
+func TestHandlerFlushesSSEHeadersBeforeFirstEvent(t *testing.T) {
+	upstreamHeadersSent := make(chan struct{})
+	allowFirstEvent := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(allowFirstEvent) }) }
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(upstreamHeadersSent)
+		<-allowFirstEvent
+		_, _ = io.WriteString(w, "event: response.created\ndata: {}\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+	defer release()
+	base, _ := url.Parse(upstream.URL)
+	front := httptest.NewServer(NewHandler(base, upstream.Client()))
+	defer front.Close()
+
+	request, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/responses", strings.NewReader(`{"model":"muse-spark-1.3-contributor","input":"ping","stream":true}`))
+	responseCh := make(chan *http.Response, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		response, err := front.Client().Do(request)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		responseCh <- response
+	}()
+
+	select {
+	case <-upstreamHeadersSent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream did not flush response headers")
+	}
+	var response *http.Response
+	select {
+	case response = <-responseCh:
+	case err := <-errCh:
+		t.Fatal(err)
+	case <-time.After(time.Second):
+		release()
+		select {
+		case lateResponse := <-responseCh:
+			lateResponse.Body.Close()
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+		}
+		t.Fatal("client did not receive SSE headers before the first event")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
+		release()
+		t.Fatalf("status=%d content-type=%q", response.StatusCode, response.Header.Get("Content-Type"))
+	}
+	release()
+	line, err := bufio.NewReader(response.Body).ReadString('\n')
+	if err != nil || line != "event: response.created\n" {
+		t.Fatalf("first SSE line=%q err=%v", line, err)
 	}
 }
 

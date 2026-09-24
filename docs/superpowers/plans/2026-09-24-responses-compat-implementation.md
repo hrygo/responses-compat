@@ -14,20 +14,48 @@
 
 **Evidence:** `docs/compatibility/2026-09-24-evidence-register.md`
 
-**Date / status:** 2026-09-24；实施中（分支 `codex/responses-compat`）。任务 1 已完成实现与验证；任务 1–2 已完成实现与验证；任务 3–6 待实施。真实上游、服务切换和发布仍受任务 7 授权门约束。
+**Date / status:** 2026-09-24；离线实现与验收中（分支 codex/responses-compat）。Task 1–2 已提交 a7ce48f、8a577c6；Task 3 提交 27fefed；Task 4–5 因共享 server.go 合并为一个原子提交 7b4d855。当前全量测试 146 项、race 146 项、vet 均通过。Task 6 身份与文档更新待提交，清洁提交后的离线构建待重做。工作区尚未合并。真实上游调用、运行服务切换和版本发布保持独立授权门；现有 v0.1.0 标签不移动。
 
 ## Global Constraints
 
-- 当前仓库身份在代码实施前仍是 muse-codex-adapter；目标名称 Responses Compat / responses-compat。
+- 原源码/服务身份为 muse-codex-adapter；代码身份已改为 Responses Compat / responses-compat。工作目录和运行服务尚未迁移。
 - 不修改 v0.1.0 标签；v0.2.0 是候选目标，不预先打标签或宣称发布。
 - 保留默认 127.0.0.1:18317、Muse 模型和上游地址；不更改默认 64 字节策略的 `muse_` 别名结果。
 - 32 MiB 请求/展开预算、Schema 深度 64、64 MiB JSON 和完整 SSE 帧上限。
 - 不伪造客户端身份，不新增 strict/store 的强制改写，不清洗任意对象 ID；不重试生成、不跨上游切换。
 - previous_response_id 不新增一律拒绝；仅声明完整工具上下文无状态重放的已测范围，未知历史映射不假装可恢复。
-- 保留 README 现有未提交内容。任何新出现的并行编辑先核实，不能整体回滚或覆盖。
+- 已保留并整合用户此前要求的 README 中文链路与说明；任何新出现的并行编辑先核实，不能整体回滚或覆盖。
 - 真实日志/原请求不进入仓库；只使用合成 Schema 和伪凭据。测试不能依赖个人目录、真实模型或参考仓库存在。
 - OpenCode 依据固定为 v1.18.32 / 545f51d26cc39a907d2867492d498d9607ea5fa4；借鉴证据，不拷贝其实现或依赖。
 - 任务 1–6 只产生代码、测试、文档和离线候选构建。任务 7 的真实请求、安装、服务切换、目录迁移、远端发布另行授权。
+
+## 综合判断与最终落地决策（2026-09-24）
+
+### 根因结论：先归因到具体边界，不给协议两端整体定罪
+
+- 已确认的 422 发生在 Responses Compat 当前 Adapter 的请求归一化阶段：本次 `$ref` 与相同 `type` 相邻时，被本地 `expandSchemaNode` 规则一律拒绝。CLIProxyAPI 转发前后该工具参数结构相同；因此这个具体故障是 Adapter 的误拒绝，不是 Codex 非标准请求或 Muse 上游拒绝的证据。
+- 修复后本地归一化通过，只能证明 Adapter 不再误拒绝该结构；不能证明 Muse 上游接受，更不能证明 Codex、OpenCode、CLIProxyAPI 与全部 Responses 服务之间不存在其他差异。
+- 对其他失败必须按请求在客户端、CLIProxyAPI、Adapter 和上游各边界的实际观测重新归因。公开规范、源码实现及离线纯函数测试用于提出假设，不替代真实同请求链路证据。
+
+### OpenCode 的结论：可作客户端对照，不是上游兼容认证
+
+- 固定版本源码显示，OpenCode CLI 与 App 共用 OpenCode 服务端实现；本机配置采用 `@ai-sdk/openai` 的 Responses provider 路由及 OpenCode Go 基址。这说明可以把 OpenCode CLI 配置为 Muse Spark 的直接客户端对照；若需要验证 App 打包/配置注入差异，再单独覆盖 App。
+- 这些证据没有证明本机曾成功向 Muse Spark 发出真实请求，也没有证明同一账号、模型权限、工具、递归 Schema、SSE 或多轮 Responses 能力。因此“OpenCode 能否直连 Muse Spark”保持待真实对照验证；不能仅凭配置或 SDK 行为宣称可用。
+- 不把 OpenCode 的请求清理逻辑整体移植到代理，也不把 OpenCode 请求当作 Codex 的唯一合规基准。对照的目的在于隔离客户端行为与中间层行为。
+
+### 产品范围：通用化为可配置兼容层，不扩张为通用 API Gateway
+
+- 对外定位仍为 **Responses Compat（Responses API 兼容性代理）**：面向不同 Responses 客户端、代理和上游之间有证据支持的实现差异。
+- 首阶段仍是本机单实例、单固定上游、精确模型白名单、单一显式策略；“更通用”指策略可配置、可关闭、便于增加经过验证的 provider 配置，不代表任意 OpenAI-compatible 认证、协议互转、账号池、动态路由或多租户网关。
+- 无配置启动保留既有 Muse 升级兼容预设；新建/新上游配置必须明确选择 profile，并从 `passthrough` 开始，只在对照证明必要后单独启用规则。无变换时保留请求原始字节；不得顺带改写 `strict`、`store`、`previous_response_id`、未知字段或客户端身份。
+- 若真实对照显示直连与 passthrough 均成功，非必要变换保持关闭；若仅特定规则改善某个明确失败，记录适用范围、语义损失和撤销条件，不据单次成功宣称通用兼容。
+
+### 最终执行顺序与当前状态
+
+1. **已完成并提交：** Task 1 修复 Schema 引用与相邻字段的误拒绝；Task 2 限定工具名恢复范围并把完整 SSE 帧计入预算。提交 a7ce48f、8a577c6。
+2. **已实现并提交：** Task 3 保留有价值的 compatibility_test.go 并完成策略隔离，提交 27fefed；Task 4–5 完成严格配置、实例隔离和 HTTP 边界，因共用 handler 文件合并提交 7b4d855。
+3. **离线候选：** Task 6 已更名代码身份、更新 README/CHANGELOG、加入无凭据配置示例和部署回退清单。Task 6 提交及干净工作区构建仍待完成。
+4. **未执行：** 未调用真实上游、未安装/切换服务、未迁移工作目录、未合并/推送/打标签/发布。旧 `v0.1.0` 仍保留；`v0.2.0` 只能是待证候选，真实兼容性仍未知。
 
 ## Review Focus
 
@@ -209,7 +237,7 @@ func TestSSEBudgetIncludesEnvelope(t *testing.T) {
 
 **Produces:** 文首 CompatibilityPolicy、musePolicy、passthroughPolicy、normalizeRequestWithPolicy。
 
-- [ ] **3.1 用测试规定透传和策略隔离。** 新建 compatibility_test.go；当前因为接口不存在红灯。
+- [x] **3.1 用测试规定透传和策略隔离。** 新建并保留 `compatibility_test.go`；覆盖原始字节、策略隔离和递归引用模式。
 
 ```go
 package main
@@ -227,7 +255,7 @@ func TestPassthroughPreservesBytesAndClientChoices(t *testing.T) {
 }
 ```
 
-- [ ] **3.2 实现预设并接入现有算法。** 不修改 strict/store，不新增 previous_response_id 拒绝。旧入口明确包装 Muse 模型白名单及 musePolicy；新 normalizer 用传入 models 做精确匹配。全透传配置仍校验 JSON 对象、模型、大小与尾随数据，但不运行 Schema 展开。只在实际变换时编码，数字继续 UseNumber。
+- [x] **3.2 实现预设并接入现有算法。** 不修改 strict/store，不新增 previous_response_id 拒绝。旧入口包装 Muse 白名单及 `musePolicy`；新 normalizer 使用精确白名单，只在实际变换时编码并保持 `UseNumber`。
 
 ```go
 func musePolicy() CompatibilityPolicy {
@@ -238,9 +266,9 @@ func passthroughPolicy() CompatibilityPolicy {
 }
 ```
 
-- [ ] **3.3 可配置别名。** 新内部函数接收 maxBytes，0 不产生映射；保留 functionToolAlias 默认结果。缩短算法为 `muse_` 加 SHA-256 十六进制摘要前 `min(maxBytes-len("muse_"), 58)` 位。64 策略仍输出旧版 63 字节名称；不同策略不可在同一会话中途隐式切换。每次请求检查原名称冲突和别名冲突，无跨请求缓存。
-- [ ] **3.4 补充表驱动策略断言。** 同一合成请求分别验证：仅 drop 删除 reasoning.id；仅 alias 修改名称；仅 inline 处理引用；其余 strict/store/unknown 字段保持。reject 递归返回固定错误，empty_schema 保持旧降级。测试别名阈值 16/32/64/256、零值禁用、跨模型白名单、未变换原字节；旧 64 哈希结果做精确对照。
-- [ ] **3.5 绿灯和提交。** `go test ./... -run 'TestPassthrough|TestNormalize|TestBuildToolName|TestFunctionToolAlias' -count=1`，再全量/race/vet。提交 `feat: isolate compatibility policies and add passthrough`。
+- [x] **3.3 可配置别名。** 接收 `maxBytes`，0 禁用，64 字节策略保留原别名；检查请求内原名称/别名冲突，无跨请求缓存。
+- [x] **3.4 补充表驱动策略断言。** 覆盖策略隔离、精确模型白名单、原字节、别名长度阈值和哈希兼容，以及递归引用模式。
+- [x] **3.5 绿灯和提交。** 定向及全量/race/vet 验证通过；提交 27fefed feat: isolate compatibility policies and add passthrough。
 
 ## Task 4：配置读取与进程接线
 
@@ -250,7 +278,7 @@ func passthroughPolicy() CompatibilityPolicy {
 
 **Produces:** RuntimeConfig、defaultConfig、decodeConfig、loadConfig、NewConfiguredHandler；旧 NewHandler 包装新入口，保持测试和默认行为。
 
-- [ ] **4.1 写配置核心反例。** 新建 config_test.go。
+- [x] **4.1 写配置核心反例。** `config_test.go` 覆盖显式 `null`、重复键和无效配置。
 
 ```go
 package main
@@ -270,11 +298,11 @@ func TestConfigRejectsDuplicateKey(t *testing.T) {
 }
 ```
 
-- [ ] **4.2 严格解码。** 先通过 Decoder.Token 递归检查每个对象的重复键，再 DisallowUnknownFields 解码结构，要求 EOF。预设后应用覆盖；tool_name_max_bytes 使用 json.RawMessage 区分缺省、null、数值，不能用单个 *int 混淆继承与禁用。显式 0、负数、小数、超出 16–256 均拒绝。
-- [ ] **4.3 启动校验。** 检查版本=1、非空不重复 models、已知 profile/策略、字面量 loopback 监听、合法端口、固定上游 URL。拒绝 userinfo/query/fragment；HTTP 仅限字面量 loopback。额外头只接收合法头名并去重，受控/逐跳头不能额外放行。不发网络请求来验证配置。
-- [ ] **4.4 接入入口。** 标准 flag 解析 `--config`；loadConfig("") 返回 defaultConfig，非空路径错误则退出，不能静默回落 Muse。main 创建同一超时/退出策略的 Server，handler 收到不可变实例配置；复制配置切片，避免调用方修改带来竞争。保留 Request 的 Context。
-- [ ] **4.5 验证矩阵。** 表驱动覆盖缺省64与显式null不同、嵌套重复键、未知键/策略、非回环监听、带 userinfo/query 的 URL、禁止头和模型不匹配。用两个 httptest 上游和不同配置实例验证请求与授权不串路由；`--config` 不存在必须退出而不是占用默认端口。
-- [ ] **4.6 绿灯和提交。** 全量/race/vet，通过后提交 `feat: configure fixed upstream compatibility instances`。
+- [x] **4.2 严格解码。** 递归检查重复键、拒绝未知键/尾随数据；区分缺省、`null` 与数值覆盖。
+- [x] **4.3 启动校验。** 校验版本、模型、profile/policy、loopback、固定上游 URL 和安全头名单，不发网络请求。
+- [x] **4.4 接入入口。** 标准 flag 解析 `--config`；加载失败早于服务器启动；配置切片复制；保留请求 Context 和现有超时/退出策略。
+- [x] **4.5 验证矩阵。** 覆盖重复/未知键、监听/上游非法值、头名单、模型路由隔离、配置不可变和缺失 `--config` 不启动。
+- [x] **4.6 绿灯和提交。** 全量/race/vet 通过；与 Task 5 合并为原子提交 7b4d855 feat: configure and harden Responses proxy instances，原因是配置 handler 与传输策略共用 server.go。
 
 ## Task 5：HTTP 传输边界与媒体类型失败关闭
 
@@ -284,7 +312,7 @@ func TestConfigRejectsDuplicateKey(t *testing.T) {
 
 **Produces:** 有名称映射时未知成功媒体类型 502；受控头不泄漏；原非2xx/取消/SSE行为有测试证明。
 
-- [ ] **5.1 写最小失败用例。** 增加 server_test.go 测试，复用现有 imports。
+- [x] **5.1 写最小失败用例。** 覆盖未知媒体类型失败关闭与 `Connection` 动态指定头过滤。
 
 ```go
 func TestUnknownSuccessMediaWithAliasesFailsClosed(t *testing.T) {
@@ -310,23 +338,23 @@ func TestUnknownSuccessMediaWithAliasesFailsClosed(t *testing.T) {
 }
 ```
 
-- [ ] **5.2 实现分支。** 成功响应有别名时，以 mime.ParseMediaType 判断 application/json、application/*+json 或 text/event-stream，不使用任意字符串 contains("json")。不支持的成功类型在下游提交响应头前返回502。无别名和非2xx按原策略转发，不错误地重写非2xx正文。
-- [ ] **5.3 头与生命周期。** 固定头 + 配置额外头形成 allowlist，再减去逐跳头、Connection token 和受控长度/编码头。请求和响应分别处理，不能让配置覆盖排除集合。不新增自动重定向/重试。取消测试用同步 channel 观察上游 Context.Done，并设置有界等待，不用任意 sleep 判成功。
-- [ ] **5.4 错误可观测性。** 固定错误 code 满足本轮定位要求，不开启正文日志。若记录诊断，只含本地请求 ID、规则 ID、计数、状态、耗时；写测试输入含 synthetic-secret，断言响应/日志不包含它。拒绝全量日志作为默认排障方式。
-- [ ] **5.5 绿灯和提交。** 全量/race/vet，保留上游非2xx、200业务错误、首事件前flush测试。提交 `fix: enforce proxy transport and rewrite boundaries`。
+- [x] **5.2 实现分支。** 严格解析 MIME 类型；未知成功类型且需恢复别名时在响应头提交前返回 502；无别名和非 2xx 仍按原边界转发。
+- [x] **5.3 头与生命周期。** 固定/附加头 allowlist 排除逐跳、`Connection` 指定头和受控长度/编码头；禁止重定向，已有取消测试以同步 channel/超时验证。
+- [x] **5.4 错误可观测性。** 仅返回固定错误，不新增正文日志或输入载荷诊断；SSE 终止错误使用 Responses Compat 标识。
+- [x] **5.5 绿灯和提交。** 全量/race/vet 通过；与 Task 4 共用提交 7b4d855，保留上游非 2xx、200 业务错误、首事件前 flush 和取消测试。
 
 ## Task 6：最后更名，交付离线候选版本
 
-**Files:** go.mod、main.go、README.md、CHANGELOG.md、examples/muse.json、examples/muse-passthrough.json、docs/deployment.md。
+**Files:** go.mod、main.go、response_rewriter.go、README.md、CHANGELOG.md、examples/muse.json、examples/muse-passthrough.json、docs/deployment.md、docs/compatibility/2026-09-24-evidence-register.md。
 
 **Consumes:** 任务1–5全部通过。
 
 **Produces:** responses-compat 源码/二进制身份与无凭据文档；不更名工作目录、不安装、不重启、不打标签。
 
-- [ ] **6.1 更名前验证。** 复核 README 既有 diff 的来源，在保留其内容基础上更新，不用旧 HEAD 覆盖。搜索旧品牌引用，区分历史记录、协议前缀、旧安装标识和需要修改的展示名称，不能全局替换 muse_ 或模型 ID。
-- [ ] **6.2 更新身份。** go.mod 模块名改 responses-compat；日志前缀改 responses-compat:；构建说明使用新二进制名。历史文档和 v0.1.0 保留，CHANGELOG 使用 Unreleased 记录，不提前给出发布日期或标记真实兼容验证通过。
-- [ ] **6.3 添加配置示例。** muse.json 精确使用主方案样例。muse-passthrough.json 使用相同上游/模型、profile=passthrough、listen=127.0.0.1:18318；明确它是诊断配置。文件不含凭据，自动测试用 decodeConfig 验证两份示例。
-- [ ] **6.4 README/部署文档。** 区分可配置机制与真实已验证路由；写清旧默认策略、有损递归、字节长度、未验证服务端状态。描述旧二进制/LaunchAgent 的备份、停旧启新、healthz和工具/SSE验收、回退步骤；实际安装路径在部署时发现，不将个人凭据或机器 wrapper 写进文档。
+- [x] **6.1 更名前验证。** 已复核并保留原 README 中文链路内容；搜索旧品牌引用，保留协议别名、模型 ID、历史版本与旧服务标识。
+- [x] **6.2 更新身份。** go.mod、CLI/log 前缀及构建说明已使用 responses-compat；CHANGELOG 以 Unreleased 记录，保留 v0.1.0 历史且不宣称真实兼容通过。
+- [x] **6.3 添加配置示例。** 两份无凭据示例与预期 profile/listen 一致，并由自动测试解析验证。
+- [x] **6.4 README/部署文档。** 记录可配置机制、默认有损行为、未验证边界和授权后的备份/切换/验证/回退流程。
 - [ ] **6.5 全量验证后提交并构建。** 提交 `refactor: rename project to Responses Compat` 后，在确认没有未知源代码改动时执行：
 
 ```sh
@@ -352,9 +380,9 @@ shasum -a 256 "$ARTIFACT_DIR/responses-compat"
 **Produces:** 三者分开：上游兼容结论、运行态部署结果、远端发布结果。任一缺少条件不得笼统称“完成发布”。
 
 - [ ] **7.1 停在授权门。** 确认真实模型调用数量/费用范围、是否允许读取所需本机凭据、是否安装新服务、远端发布目标。凭据不进入命令参数、日志、仓库或报告。授权前只做前六项，不以方案批准代替运行态批准。
-- [ ] **7.2 建立对照，而不是先证明 Adapter 必需。** 同一模型/账号条件下使用最小合成请求，分开记录：E0直接上游；E1经CLIProxyAPI不经Adapter；E2经CLIProxyAPI+passthrough；E3在E2上每次仅启用一条规则。不要在原生产路由上直接改来改去，优先隔离测试端口/请求。
+- [ ] **7.2 建立分层对照，而不是先证明 Adapter 或某客户端必需。** 在同一模型/账号权限条件下使用最小合成请求，分别记录：E0 原始 HTTP 直连上游，用于隔离上游契约；E1 OpenCode CLI 直连 Muse，用于验证其 provider/SDK 请求路径；仅当需确认桌面配置注入或打包差异时增加 E1a OpenCode App 直连；E2 目标客户端经 CLIProxyAPI 但不经过 Adapter；E3 经 CLIProxyAPI + Adapter passthrough；E4 在 E3 基础上每次只启用一条兼容规则。请求结构、模型权限、版本和错误边界分开记录，不把不同客户端的请求当作字节级同一请求，也不在原生产路由上直接改动，优先使用隔离端口/合成请求。以上真实调用均须先取得对应授权。
 - [ ] **7.3 五类用例。** 普通文本；本次 ref+同type；递归工具；超长工具名；无外部副作用的echo工具完整多轮+SSE。记录每类在哪个边界失败、错误类别及单规则前后结果；不复制真实会话来省事。失败不无限重试，未完成上游验证的能力继续标“未验证”。
-- [ ] **7.4 按证据裁剪规则。** 若E1已成功而E2/E3变坏，修代理，不责怪上游；若E0/E1/E2都成功，相关规则保持关闭，不增加更多变换。若确需某条规则，记录适用范围、语义损失、退出条件。不能凭源码函数测试宣称上游接受。
+- [ ] **7.4 按证据裁剪规则。** E0 成功只证明该合成 HTTP 请求被上游接受；E1 成功只证明 OpenCode CLI 对该用例可直连，不能替代目标客户端结果。若目标客户端 E2 成功而 E3 失败，归因并修复 Adapter 透传路径；若 E3 成功而单条 E4 失败，关闭或修复该条规则；若 E2/E3 无需变换均成功，则对应变换保持关闭。只有请求到达上游且有可归因响应，才评估上游行为；任何单次结果都不能宣称全功能兼容。必要规则需记录适用范围、语义损失和撤销条件。
 - [ ] **7.5 服务切换。** 核实旧运行进程的实际可执行文件，备份当前二进制与plist并记录校验值；历史排查中为 fdd2415+dirty，部署时重新核实；实际运行构建不能由Git标签或历史记录替代。准备新二进制和com.hrygo.responses-compat，停旧后启新，不能争用18317。失败则停新并恢复实际备份；不执行破坏性Git回退。healthz 204只是第一步，还需实际工具闭环和SSE。
 - [ ] **7.6 目录、远端和发布。** 当前工作目录移名及托管仓库更名各自核实其他任务/工作树后执行。尚无远端时只报告本地候选或本地部署，不能创建猜测的远端。确认版本门槛后才能新增v0.2.0标签与发布说明，不移动v0.1.0。
 - [ ] **7.7 最终报告。** 分别列出源码提交、构建校验值、实际运行版本、每个真实测试结果、未验证项、远端发布状态和回退点。未解决的422禁止将候选版本标为可发布。
@@ -365,12 +393,12 @@ shasum -a 256 "$ARTIFACT_DIR/responses-compat"
 - 引用语义与预算：任务1、3；工具名称范围/双向映射：任务2、3；完整SSE预算：任务2。
 - 严格配置/实例隔离：任务4；媒体类型/头/取消：任务5。
 - 不搬运客户端strict/store/itemId行为：任务3的字节保持与单策略断言。
-- 真实证据与离线结果分离、必要性检验：任务7；OpenCode结论在证据登记O1–O6。
+- 真实证据与离线结果分离、兼容规则必要性检验及 OpenCode CLI/App 直连对照：任务7；源码结论与限制见证据登记 O1–O6。
 - 不在本轮实施、部署或委派：全局约束及任务7授权门。
 
 建议执行方式：在当前主会话按任务1→7顺序实施；在任务1、任务2和部署前重点复核，不并行改写同一组schema/server文件。用户明确选择并行或独立审查后再委派。任务7可因缺少真实请求或部署授权保持未执行，但必须如实报告，不能把候选构建当成完整上线。
 
-## 本轮计划验证记录（仅临时副本）
+## 实施前离线预检记录（历史，仅临时副本）
 
 2026-09-24 已对8段Go代码块执行gofmt语法解析，全部通过。将任务1、2、5的回归代码放入当前仓库源码的临时副本运行，结果如下；源码工作区没有新增测试文件。
 

@@ -9,25 +9,25 @@
 - T：本地合成测试；证明受测实现，不证明真实提供方。
 - L：真实链路观测或对照；必须注明历史错误日志、主动复现或端到端验证，记录版本、路由及日期，不能相互替代。
 
-各类型独立，不把文档、测试和真实行为混成一个“已验证”标签。初次编写时未读取真实请求日志；2026-09-24 16:54 的后续故障排查已按用户要求检查对应错误日志，并在内存中做离线对照。没有主动调用上游模型，没有把原始请求落入仓库，也未重跑完整代码测试。前序全套测试结果仅作历史信息。
+各类型独立，不把文档、测试和真实行为混成一个“已验证”标签。初次编写时未读取真实请求日志；2026-09-24 16:54 的后续故障排查已按用户要求检查对应错误日志，并在内存中做离线对照。没有主动调用上游模型，也没有把原始请求落入仓库。当前离线源码验证另见文末检查点；其结果仅证明本地实现，不扩大为真实提供方证据。
 
 ## 问题与规则登记
 
 | ID | 当前行为/问题 | 已有证据 | 尚缺证据与允许结论 |
 |---|---|---|---|
-| schema.ref_siblings | `$ref` 与相邻 type 触发 Adapter 422 | C；L：16:39:34 故障日志中该工具参数转发前后相同；T：原请求离线失败、仅移除重复 type 后通过、最小合成复现 | 本次可定位为 Adapter 误拒绝；尚未修复，未证明修改后上游端到端成功 |
+| schema.ref_siblings | `$ref` 与相邻相同约束曾触发 Adapter 422 | C；L：16:39:34 故障日志中该工具参数转发前后相同；T：原请求离线失败、仅移除重复 type 后通过、最小合成复现；现有 `TestRefSibling*` 回归覆盖 | 已修复 Adapter 误拒绝并通过本地测试；修改后真实上游是否接受仍未验证 |
 | schema.inline_local_refs | schema.go 展开本地引用 | C；D1/D2 | 未取得原始失败请求；不能断言所有失败都是上游不支持引用 |
 | schema.recursive_empty | 递归回边替换为 `{}` | C；D1/D2 支持递归公开能力 | 这是放宽约束；合法递归不等于不标准，具体上游失败仍待 L |
 | tools.structured_traversal | 处理嵌套工具与 additional_tools | C；D1/D3 | 字段已有公开说明；具体模型支持和代理是否扁平化待 L |
 | tools.name_alias | tool_names.go 按 len(name)>64 改名并建立映射 | C；D5 的 64 限制属于 Chat Completions | 无当前 Responses 对应字段长度约束的充分证据；无 A/B 名称对照；不认定 Codex 或上游违规 |
 | reasoning.drop_id | schema.go 删除输入 reasoning 项的 id | C；D4 说明无状态 reasoning 重放 | 缺同账号/同路由 ID 来源和前后对照；“provider ID 不稳定”仅为待证假设 |
 | transport.sse_flush | SSE 响应头提前刷新 | C：fdd2415，server.go | 属于 Adapter 自身处理，不归责于 Codex/上游 |
-| response.name_scope | 当前 response_rewriter.go 按任意 name 递归恢复 | C/T：临时副本中的 metadata.name 反例实际失败 | 已复现合成输入误改，待修复；不是新增真实用户会话事故证据 |
-| response.full_frame_limit | 原始帧及 JSON 恢复已有预算 | C/T：完整帧封装超限测试实际未返回错误 | 已复现输出帧预算缺口，待修复 |
-| transport.rewrite_boundary | 有别名时成功 text/plain 仍透传；Connection指定头仍转发 | C/T：本地 httptest 反例分别观察到200和头泄漏 | 仅本地合成验证，不涉及真实凭据外泄事件；任务5修复 |
+| response.name_scope | 响应恢复限定在已识别的 function_call/函数定义位置 | C/T：原 metadata.name 反例曾失败；当前回归测试验证 metadata 与 arguments 不变 | 本地合成误改已修复；不代表真实会话出现过此问题 |
+| response.full_frame_limit | JSON 与完整 SSE 帧分别受扩展后预算限制 | C/T：完整帧封装超限反例曾失败；当前边界测试覆盖 | 本地预算缺口已修复；不代表真实上游流已验证 |
+| transport.rewrite_boundary | 成功未知媒体类型在别名恢复时失败关闭；动态 hop-by-hop 与受控头不转发 | C/T：原本地 httptest 反例观察到 200 和头泄漏；当前测试断言 502、Connection token 过滤及长度/编码头过滤 | 本地边界已修复；不涉及真实凭据外泄事件，也未测试真实上游的媒体类型 |
 | state.previous_response_id | 当前无专属拒绝逻辑，名称映射为请求级 | C | 服务端保存的历史工具映射无法由当前资料保证；未验证，不新增普遍 422，不宣称完整支持 |
 
-源码依据：`schema.go`、`tool_names.go`、`response_rewriter.go`、`server.go`；相关合成样例在对应 `_test.go` 文件中。只有在实际运行并记录提交及结果后，才为某个具体用例登记新的 T 证据。
+源码依据：`schema.go`、`tool_names.go`、`response_rewriter.go`、`server.go`、`config.go`；相关合成样例在对应 `_test.go` 文件中。下方检查点仅登记本地实现测试，不给真实上游增加 L 证据。
 
 ## 官方资料（本轮读取成功）
 
@@ -155,7 +155,7 @@ SDK 元数据：`https://registry.npmjs.org/@ai-sdk/openai/3.0.88`
 }
 ```
 
-原版诊断结果为 `schema reference node has unsupported siblings`。本样例尚未写入生产测试文件；按用户要求随整体实施加入。
+原版诊断结果为 `schema reference node has unsupported siblings`。该最小相邻约束样例已作为 `schema_refs_test.go` 中的生产回归测试加入。
 
 ## 后续真实案例记录字段
 
@@ -163,8 +163,15 @@ case_id、rule_id、核实日期、组件版本、模型/路由范围、模式�
 
 以上字段用于后续登记；当前新增一项历史日志 L 观测及离线 T 对照，见 INC-20260924-422-ref-sibling。没有新增上游端到端成功证据。
 
-## 执行计划的红灯验证（2026-09-24）
+## 执行计划的红灯验证（2026-09-24，预实现历史记录）
 
 在临时副本中运行计划任务1、2、5的五个测试函数，四个函数按预期因行为缺陷失败，冲突类型负向测试通过。新增的T证据包括：重复类型/注解被拒绝、普通metadata.name被误改、SSE输出封装超限未被拒绝、Connection指定头被转发和未知成功媒体类型未失败关闭。
 
-详细用例与结果见 `docs/superpowers/plans/2026-09-24-responses-compat-implementation.md`。没有修改生产测试或源码；未运行真实模型请求、未新增端到端成功证据，也未宣称完整测试套件已重新验证。
+详细用例与结果见 `docs/superpowers/plans/2026-09-24-responses-compat-implementation.md`。本节只描述当时临时副本红灯验证，不代表之后工作区状态。
+
+## 当前离线实现检查点（2026-09-24）
+
+- Task 1–2 的独立修复提交：`a7ce48f`、`8a577c6`；策略隔离提交：`27fefed`；严格配置及 HTTP 传输边界提交：`7b4d855`。Task 6 的身份/文档整理尚未提交。
+- 截至此检查点，`go test ./... -count=1` 与 `go test -race ./... -count=1` 均为 146 项通过，`go vet ./...` 通过。验证使用本机 Go 1.27.1 / darwin-arm64；这只证明本地测试实现。
+- 没有主动发出真实 Muse/OpenCode Go 请求，没有执行 OpenCode CLI/App 直连对照，没有安装或切换本机 LaunchAgent，也没有移动工作目录、合并、推送、打标签或发布。
+- 因此 `$ref` 修复后的上游接受性、Muse Responses 的实际 Schema/名称限制、CLI/App 是否能直接使用 Muse，以及当前运行服务状态仍未验证。不得将本地 146 项通过描述为服务端兼容或发布验收通过。

@@ -451,7 +451,7 @@ func streamSSEWithToolNameRestore(dst io.Writer, src io.Reader, flusher http.Flu
 
 func writeSSERewriteError(dst io.Writer, flusher http.Flusher) error {
 	responseID := rewriteFailureSequence.Add(1)
-	event := fmt.Sprintf("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_muse_adapter_error_%d\",\"status\":\"failed\",\"error\":{\"type\":\"server_error\",\"code\":\"adapter_rewrite_failed\",\"message\":\"Muse response could not be safely rewritten\"}}}\n\n", responseID)
+	event := fmt.Sprintf("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_responses_compat_error_%d\",\"status\":\"failed\",\"error\":{\"type\":\"server_error\",\"code\":\"adapter_rewrite_failed\",\"message\":\"upstream response could not be safely rewritten\"}}}\n\n", responseID)
 	n, err := io.WriteString(dst, event)
 	if err != nil {
 		return err

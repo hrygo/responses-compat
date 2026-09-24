@@ -18,6 +18,17 @@ type toolNameAliases struct {
 }
 
 func buildToolNameAliases(request map[string]any) (*toolNameAliases, error) {
+	return buildToolNameAliasesWithLimit(request, maxFunctionToolNameLength)
+}
+
+func buildToolNameAliasesWithLimit(request map[string]any, maxBytes int) (*toolNameAliases, error) {
+	if maxBytes == 0 {
+		return nil, nil
+	}
+	if maxBytes < 16 || maxBytes > 256 {
+		return nil, errors.New("invalid function tool name length limit")
+	}
+
 	names := make(map[string]struct{})
 	collectToolNames(request["tools"], names)
 	if input, ok := request["input"].([]any); ok {
@@ -47,10 +58,13 @@ func buildToolNameAliases(request map[string]any) (*toolNameAliases, error) {
 		toClient:   make(map[string]string),
 	}
 	for name := range names {
-		if len(name) <= maxFunctionToolNameLength {
+		if len(name) <= maxBytes {
 			continue
 		}
-		alias := functionToolAlias(name)
+		alias, err := functionToolAliasWithLimit(name, maxBytes)
+		if err != nil {
+			return nil, err
+		}
 		if _, collision := names[alias]; collision {
 			return nil, errors.New("function tool alias collides with an existing name")
 		}
@@ -67,8 +81,20 @@ func buildToolNameAliases(request map[string]any) (*toolNameAliases, error) {
 }
 
 func functionToolAlias(name string) string {
+	alias, _ := functionToolAliasWithLimit(name, maxFunctionToolNameLength)
+	return alias
+}
+
+func functionToolAliasWithLimit(name string, maxBytes int) (string, error) {
+	if maxBytes < len(functionToolAliasPrefix)+1 {
+		return "", errors.New("function tool alias limit is too small")
+	}
+	digestLength := maxBytes - len(functionToolAliasPrefix)
+	if digestLength > functionToolAliasDigestLength {
+		digestLength = functionToolAliasDigestLength
+	}
 	digest := sha256.Sum256([]byte(name))
-	return functionToolAliasPrefix + hex.EncodeToString(digest[:])[:functionToolAliasDigestLength]
+	return functionToolAliasPrefix + hex.EncodeToString(digest[:])[:digestLength], nil
 }
 
 func collectToolNames(value any, names map[string]struct{}) {

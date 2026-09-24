@@ -7,6 +7,10 @@ import (
 )
 
 func expandRefWithSiblings(node map[string]any, root any, active map[string]bool, depth int, budget *schemaBudget) (any, error) {
+	return expandRefNodeWithRecursiveRefs(node, root, active, depth, budget, "empty_schema")
+}
+
+func expandRefNodeWithRecursiveRefs(node map[string]any, root any, active map[string]bool, depth int, budget *schemaBudget, recursiveRefs string) (any, error) {
 	rawRef, exists := node["$ref"]
 	if !exists {
 		return nil, unsupportedRefSibling()
@@ -23,7 +27,7 @@ func expandRefWithSiblings(node map[string]any, root any, active map[string]bool
 		}
 	}
 	if siblingCount == 0 {
-		return expandRef(ref, root, active, depth, budget)
+		return expandRefWithRecursiveRefs(ref, root, active, depth, budget, recursiveRefs)
 	}
 
 	// Keep intermediate work bounded independently from the caller budget. The
@@ -31,7 +35,7 @@ func expandRefWithSiblings(node map[string]any, root any, active map[string]bool
 	// annotation may replace a longer annotation on the target without being
 	// incorrectly rejected for the discarded bytes.
 	targetBudget := &schemaBudget{limit: maxRequestBytes}
-	expandedTarget, canonical, entered, err := expandRefTarget(ref, root, active, depth, targetBudget)
+	expandedTarget, canonical, entered, err := expandRefTargetWithRecursiveRefs(ref, root, active, depth, targetBudget, recursiveRefs)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +69,7 @@ func expandRefWithSiblings(node map[string]any, root any, active map[string]bool
 		if existing, exists := merged[key]; exists && reflect.DeepEqual(existing, rawSibling) {
 			continue
 		}
-		expandedSibling, err := expandSchemaNode(rawSibling, root, active, depth+1, siblingBudget)
+		expandedSibling, err := expandSchemaNodeWithRecursiveRefs(rawSibling, root, active, depth+1, siblingBudget, recursiveRefs)
 		if err != nil {
 			return nil, err
 		}

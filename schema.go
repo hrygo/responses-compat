@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -22,9 +23,17 @@ func NormalizeRequest(data []byte) ([]byte, error) {
 }
 
 func normalizeRequestWithToolNames(data []byte) ([]byte, *toolNameAliases, error) {
+	return normalizeRequestWithPolicy(data, []string{museModel}, musePolicy())
+}
+
+func normalizeRequestWithPolicy(data []byte, models []string, policy CompatibilityPolicy) ([]byte, *toolNameAliases, error) {
 	if len(data) == 0 || len(data) > maxRequestBytes {
 		return nil, nil, errors.New("request size out of range")
 	}
+	if err := validateCompatibilityPolicy(policy); err != nil {
+		return nil, nil, err
+	}
+
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	var request map[string]any
@@ -35,20 +44,36 @@ func normalizeRequestWithToolNames(data []byte) ([]byte, *toolNameAliases, error
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, nil, errors.New("request contains trailing JSON")
 	}
-	if request == nil || request["model"] != museModel {
+	if request == nil {
+		return nil, nil, errors.New("request must be a JSON object")
+	}
+	model, ok := request["model"].(string)
+	if !ok || !modelAllowed(model, models) {
 		return nil, nil, errors.New("unsupported model")
 	}
 
-	aliases, err := buildToolNameAliases(request)
-	if err != nil {
-		return nil, nil, err
+	var aliases *toolNameAliases
+	changed := false
+	if policy.ToolNameMaxBytes != 0 {
+		var err error
+		aliases, err = buildToolNameAliasesWithLimit(request, policy.ToolNameMaxBytes)
+		if err != nil {
+			return nil, nil, err
+		}
+		if aliases.hasAliases() {
+			aliases.rewriteRequest(request)
+			changed = true
+		}
 	}
-	aliases.rewriteRequest(request)
 
 	budget := &schemaBudget{limit: maxRequestBytes}
-	if tools, exists := request["tools"]; exists {
-		if err := normalizeToolTree(tools, budget); err != nil {
-			return nil, nil, err
+	if policy.SchemaRefs == "inline" {
+		if tools, exists := request["tools"]; exists {
+			treeChanged, err := normalizeToolTreeWithRecursiveRefs(tools, budget, policy.RecursiveRefs)
+			if err != nil {
+				return nil, nil, err
+			}
+			changed = changed || treeChanged
 		}
 	}
 	if input, ok := request["input"].([]any); ok {
@@ -57,20 +82,26 @@ func normalizeRequestWithToolNames(data []byte) ([]byte, *toolNameAliases, error
 			if !ok {
 				continue
 			}
-			if entry["type"] == "reasoning" {
-				// The OpenCode Go route may not retain provider-scoped reasoning IDs across tool turns.
-				// Keep encrypted_content and summary for stateless replay; remove only the unstable ID.
-				delete(entry, "id")
+			if entry["type"] == "reasoning" && policy.ReasoningIDs == "drop" {
+				if _, exists := entry["id"]; exists {
+					delete(entry, "id")
+					changed = true
+				}
 			}
-			if entry["type"] != "additional_tools" {
+			if policy.SchemaRefs != "inline" || entry["type"] != "additional_tools" {
 				continue
 			}
 			if tools, exists := entry["tools"]; exists {
-				if err := normalizeToolTree(tools, budget); err != nil {
+				treeChanged, err := normalizeToolTreeWithRecursiveRefs(tools, budget, policy.RecursiveRefs)
+				if err != nil {
 					return nil, nil, err
 				}
+				changed = changed || treeChanged
 			}
 		}
+	}
+	if !changed {
+		return append([]byte(nil), data...), aliases, nil
 	}
 
 	var out bytes.Buffer
@@ -84,6 +115,15 @@ func normalizeRequestWithToolNames(data []byte) ([]byte, *toolNameAliases, error
 		return nil, nil, errors.New("normalized request exceeds size limit")
 	}
 	return append([]byte(nil), encoded...), aliases, nil
+}
+
+func modelAllowed(model string, models []string) bool {
+	for _, allowed := range models {
+		if model == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 type schemaBudget struct {
@@ -113,30 +153,45 @@ func encodedJSONStringSize(value string, budget *schemaBudget) (int, error) {
 }
 
 func normalizeToolTree(value any, budget *schemaBudget) error {
+	_, err := normalizeToolTreeWithRecursiveRefs(value, budget, "empty_schema")
+	return err
+}
+
+func normalizeToolTreeWithRecursiveRefs(value any, budget *schemaBudget, recursiveRefs string) (bool, error) {
+	changed := false
 	switch node := value.(type) {
 	case []any:
 		for _, child := range node {
-			if err := normalizeToolTree(child, budget); err != nil {
-				return err
+			childChanged, err := normalizeToolTreeWithRecursiveRefs(child, budget, recursiveRefs)
+			if err != nil {
+				return false, err
 			}
+			changed = changed || childChanged
 		}
 	case map[string]any:
 		if rawSchema, exists := node["parameters"]; exists {
 			schema, ok := rawSchema.(map[string]any)
 			if !ok {
-				return errors.New("tool parameters must be a JSON object")
+				return false, errors.New("tool parameters must be a JSON object")
 			}
-			normalized, err := expandSchemaNode(schema, schema, make(map[string]bool), 0, budget)
+			normalized, err := expandSchemaNodeWithRecursiveRefs(schema, schema, make(map[string]bool), 0, budget, recursiveRefs)
 			if err != nil {
-				return err
+				return false, err
 			}
-			node["parameters"] = normalized
+			if !reflect.DeepEqual(schema, normalized) {
+				node["parameters"] = normalized
+				changed = true
+			}
 		}
 		if nested, exists := node["tools"]; exists {
-			return normalizeToolTree(nested, budget)
+			nestedChanged, err := normalizeToolTreeWithRecursiveRefs(nested, budget, recursiveRefs)
+			if err != nil {
+				return false, err
+			}
+			changed = changed || nestedChanged
 		}
 	}
-	return nil
+	return changed, nil
 }
 
 func resolveJSONPointer(root any, ref string) (any, string, error) {
@@ -194,6 +249,10 @@ func resolveJSONPointer(root any, ref string) (any, string, error) {
 }
 
 func expandRefTarget(ref string, root any, active map[string]bool, depth int, budget *schemaBudget) (any, string, bool, error) {
+	return expandRefTargetWithRecursiveRefs(ref, root, active, depth, budget, "empty_schema")
+}
+
+func expandRefTargetWithRecursiveRefs(ref string, root any, active map[string]bool, depth int, budget *schemaBudget, recursiveRefs string) (any, string, bool, error) {
 	if depth > maxSchemaDepth {
 		return nil, "", false, errors.New("schema depth exceeded")
 	}
@@ -202,13 +261,22 @@ func expandRefTarget(ref string, root any, active map[string]bool, depth int, bu
 		return nil, "", false, err
 	}
 	if active[canonical] {
+		if recursiveRefs == "reject" {
+			return nil, "", false, &normalizationError{
+				Code:    normalizationCodeRecursiveSchemaUnsupported,
+				Message: "recursive schema reference is unsupported by policy",
+			}
+		}
+		if recursiveRefs != "empty_schema" {
+			return nil, "", false, errors.New("invalid recursive schema policy")
+		}
 		if err := budget.add(2); err != nil {
 			return nil, "", false, err
 		}
 		return map[string]any{}, canonical, false, nil
 	}
 	active[canonical] = true
-	value, err := expandSchemaNode(target, root, active, depth+1, budget)
+	value, err := expandSchemaNodeWithRecursiveRefs(target, root, active, depth+1, budget, recursiveRefs)
 	if err != nil {
 		delete(active, canonical)
 		return nil, "", false, err
@@ -217,7 +285,11 @@ func expandRefTarget(ref string, root any, active map[string]bool, depth int, bu
 }
 
 func expandRef(ref string, root any, active map[string]bool, depth int, budget *schemaBudget) (any, error) {
-	value, canonical, entered, err := expandRefTarget(ref, root, active, depth, budget)
+	return expandRefWithRecursiveRefs(ref, root, active, depth, budget, "empty_schema")
+}
+
+func expandRefWithRecursiveRefs(ref string, root any, active map[string]bool, depth int, budget *schemaBudget, recursiveRefs string) (any, error) {
+	value, canonical, entered, err := expandRefTargetWithRecursiveRefs(ref, root, active, depth, budget, recursiveRefs)
 	if entered {
 		delete(active, canonical)
 	}
@@ -225,13 +297,17 @@ func expandRef(ref string, root any, active map[string]bool, depth int, budget *
 }
 
 func expandSchemaNode(value, root any, active map[string]bool, depth int, budget *schemaBudget) (any, error) {
+	return expandSchemaNodeWithRecursiveRefs(value, root, active, depth, budget, "empty_schema")
+}
+
+func expandSchemaNodeWithRecursiveRefs(value, root any, active map[string]bool, depth int, budget *schemaBudget, recursiveRefs string) (any, error) {
 	if depth > maxSchemaDepth {
 		return nil, errors.New("schema depth exceeded")
 	}
 	switch node := value.(type) {
 	case map[string]any:
 		if _, exists := node["$ref"]; exists {
-			return expandRefWithSiblings(node, root, active, depth+1, budget)
+			return expandRefNodeWithRecursiveRefs(node, root, active, depth+1, budget, recursiveRefs)
 		}
 		out := make(map[string]any, len(node))
 		if err := budget.add(2); err != nil {
@@ -254,7 +330,7 @@ func expandSchemaNode(value, root any, active map[string]bool, depth int, budget
 				return nil, err
 			}
 			first = false
-			expanded, err := expandSchemaNode(child, root, active, depth+1, budget)
+			expanded, err := expandSchemaNodeWithRecursiveRefs(child, root, active, depth+1, budget, recursiveRefs)
 			if err != nil {
 				return nil, err
 			}
@@ -272,7 +348,7 @@ func expandSchemaNode(value, root any, active map[string]bool, depth int, budget
 					return nil, err
 				}
 			}
-			expanded, err := expandSchemaNode(child, root, active, depth+1, budget)
+			expanded, err := expandSchemaNodeWithRecursiveRefs(child, root, active, depth+1, budget, recursiveRefs)
 			if err != nil {
 				return nil, err
 			}

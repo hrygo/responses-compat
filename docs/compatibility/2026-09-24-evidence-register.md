@@ -184,3 +184,12 @@ case_id、rule_id、核实日期、组件版本、模型/路由范围、模式�
 - 从该干净 HEAD 执行 `go build -trimpath -o /tmp/responses-compat .` 成功。构建元数据：module `responses-compat`；版本信息 `v0.1.1-0.20260924120753-81a1d5c21f90`（Go 根据未发布提交推导的伪版本，不是正式 release）；`vcs.revision=81a1d5c21f902dfa65ea415eac33fb27a8f87b75`、`vcs.modified=false`。临时构建产物 `/tmp/responses-compat` 的 SHA-256：`d806589dc115652cfb86020c01407654b61d314be0220e2bb2903a2e67aac368`。
 - 当前没有 Git remote；本地 `v0.1.0` 标签仍指向旧提交 `211fefdd685313ec1c4132ebd969e9fdbab73b40`。没有推送、创建标签或发布。
 - 本节仅提供当前主干的离线代码、测试和构建证据；没有执行 E0–E4 真实路由对照、OpenCode CLI/App 直连或本机服务切换，不构成上游兼容及运行态发布验收。
+
+
+## 项目目录更名复核（2026-09-24）
+
+- 用户明确要求先完成重命名，再提交 GitHub。已确认当前任务是唯一引用该本地工作目录的 Codex task、Git worktree 仅有 `main`，`~/Documents/responses-compat` 原先不存在。
+- 更名前核对当前 `com.hrygo.muse-codex-adapter` LaunchAgent：标签与实际加载状态相符；可执行文件名仍为 `muse-codex-adapter`；其 `Program`/`ProgramArguments` 不引用项目工作目录。仅核验是否引用目录，未读取 `EnvironmentVariables`。据此完成项目目录迁移 `~/Documents/muse-codex-adapter` → `~/Documents/responses-compat`，没有停止、重启或替换运行服务。
+- 仓库根目录的 `muse-codex-adapter` 是被忽略的旧构建产物，构建元数据显示 module `muse-codex-adapter`、revision `fdd24150b7821da633986984940f16e47a41520e`、`vcs.modified=true`；保留原文件，不纳入 Git，也不将其当作运行服务回退备份。`.gitignore` 继续忽略此旧产物，并新增忽略当前默认输出 `responses-compat` 与 macOS `.DS_Store`。
+- 运行态身份仍是旧 LaunchAgent/二进制；目录迁移不改变运行服务。服务改名或切换需按部署清单另行授权。
+- Git remote 仍为空；当前 GitHub 连接账号中未找到名为 `responses-compat` 的目标仓库。用户已要求提交 GitHub，但新仓库公开/私有可见性未指定，因此本轮不创建远端、不推送、不打标签。

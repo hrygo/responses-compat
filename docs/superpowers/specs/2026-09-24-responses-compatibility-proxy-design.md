@@ -248,3 +248,8 @@ v0.2.0 仅为目标版本。INC-20260924-422-ref-sibling 未修复并验证前�
 旧二进制和启动配置是运行态回退点；无持久化数据迁移，不依赖 git reset 或重写历史回退。保持默认端口可减少路由变更，但部署前仍须核实实际配置，不能仅凭 README 判断安装状态。
 
 本轮只定稿本方案和证据登记文件：不修改代码、README 既有未提交内容、目录名、二进制、LaunchAgent、CLIProxyAPI、标签或远端状态。落地实施计划已形成于 `docs/superpowers/plans/2026-09-24-responses-compat-implementation.md`；需审阅并确认执行方式后实施，不因文档更新自动开始实现或调用真实上游。
+
+
+## 执行状态补记（2026-09-24）
+
+用户后续明确要求先完成重命名，再提交 GitHub。本地工作目录已从 `~/Documents/muse-codex-adapter` 改为 `~/Documents/responses-compat`，源码、module、命令及 README 先前已完成 `Responses Compat` 命名。运行中的旧 LaunchAgent `com.hrygo.muse-codex-adapter` 未改动或重启；目录迁移前已确认其命令参数不引用项目目录。GitHub 当前无 remote，连接账号下未找到 `responses-compat` 仓库；尚需确定目标仓库/新建意图及可见性后才能提交。真实上游测试和运行态切换仍按原授权门执行。

@@ -1,1 +1,5 @@
+# Retained legacy build artifact; do not commit.
 /muse-codex-adapter
+# Default Go build output for the renamed project.
+/responses-compat
+.DS_Store

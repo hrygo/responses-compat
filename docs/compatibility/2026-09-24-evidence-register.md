@@ -122,7 +122,7 @@ SDK 元数据：`https://registry.npmjs.org/@ai-sdk/openai/3.0.88`
 
 ## 已确认案例：INC-20260924-422-ref-sibling
 
-- 状态：已定位、待统一修复；用户要求合并到优化方案，稍后一起解决。
+- 状态：Task 1 已在本地实现修复并加入 `TestRefSibling*` 回归；修复提交 `a7ce48f` 已包含于主干代码候选 `a108549`，当前 `main` 仍保留该实现。离线修复通过；真实 Muse 上游接受性及运行态是否已消除故障仍未验证。
 - 发生时间：错误日志 2026-09-24 16:39:34；排查核实 16:54，Asia/Shanghai。
 - 故障跳点：CLIProxyAPI → `127.0.0.1:18317/v1/responses`，响应 422，正文为 Adapter 的通用错误。
 - 涉及工具：`mcp__codex_app.automation_update`；节点 `parameters/$defs/__schema20`，引用 `#/$defs/__schema2`，引用与自身都约束为 string。
@@ -132,7 +132,7 @@ SDK 元数据：`https://registry.npmjs.org/@ai-sdk/openai/3.0.88`
 - 运行态：Adapter healthz 204；运行二进制构建元数据为 fdd2415 且 vcs.modified=true，来源不是可精确等同的干净提交。离线诊断使用当前仓库源码（316b450 时的代码），不能把两者声称为同一构建。
 - 归因：本次 422 为 Adapter 自身的保守拒绝规则；该工具参数未被 CLIProxyAPI 改动。此证据不能证明上游接受同一请求，也不能推广到其他 Schema 问题。
 - 语义：本次引用目标与相邻 type 重复，移除重复约束用于诊断，不是“删除所有相邻字段”的生产修复方案。
-- 退出条件：按主方案补齐约束组合与错误分类回归，验证修复代码；后续经授权部署并完成实际调用验证后才能标为已解决。
+- 离线退出条件：同约束相邻字段可正常归一化、冲突约束仍被明确拒绝，并有回归测试；此条件已满足。运行态退出条件：经授权用最小合成请求验证目标 Muse 路由，并记录请求到达的边界及响应。完成前仅可称“离线修复完成”，不能称端到端故障关闭或上游兼容已验证。
 
 可提交的最小合成样例（不含原请求的工具描述、提示词、会话或凭据）：
 
@@ -176,3 +176,11 @@ case_id、rule_id、核实日期、组件版本、模型/路由范围、模式�
 - 离线二进制 SHA-256：c7ad523b7f3758310a8975c54131d4cb49c30f0a76db402aeda43156084327f6；go version -m 显示 source revision a1085497b2184c4c28e184d5a4e94888ac83d8f9 且 vcs.modified=false。
 - 代码提交 a108549 已 fast-forward 合并到本地 main，后续仅追加了文档验证记录；未配置 Git remote，因此未推送或发布。没有真实上游调用、CLI/App 直连对照或本机服务切换；v0.1.0 标签保持不变。
 - 因此 `$ref` 修复后的上游接受性、Muse Responses 的实际 Schema/名称限制、CLI/App 是否能直接使用 Muse，以及当前运行服务状态仍未验证。不得将本地 146 项通过描述为服务端兼容或发布验收通过。
+
+## 主干复验（2026-09-24）
+
+- 代码验证对象：当次本地 `main` 的 Go 源码状态为 `81a1d5c21f902dfa65ea415eac33fb27a8f87b75`；与代码候选 `a108549` 相比仅有执行计划和证据登记的文档变更，没有源码差异。之后仅更新并提交了证据文档，当前 `main` 工作区干净，Go 源码未变。
+- 在干净的上述 HEAD 上运行 `go test ./... -count=1`、`go test -race ./... -count=1`，均为 146 项通过；`go vet ./...` 通过。证据文档更新后、提交前再次运行三项检查，结果相同。环境为 Go 1.27.1、darwin/arm64。
+- 从该干净 HEAD 执行 `go build -trimpath -o /tmp/responses-compat .` 成功。构建元数据：module `responses-compat`；版本信息 `v0.1.1-0.20260924120753-81a1d5c21f90`（Go 根据未发布提交推导的伪版本，不是正式 release）；`vcs.revision=81a1d5c21f902dfa65ea415eac33fb27a8f87b75`、`vcs.modified=false`。临时构建产物 `/tmp/responses-compat` 的 SHA-256：`d806589dc115652cfb86020c01407654b61d314be0220e2bb2903a2e67aac368`。
+- 当前没有 Git remote；本地 `v0.1.0` 标签仍指向旧提交 `211fefdd685313ec1c4132ebd969e9fdbab73b40`。没有推送、创建标签或发布。
+- 本节仅提供当前主干的离线代码、测试和构建证据；没有执行 E0–E4 真实路由对照、OpenCode CLI/App 直连或本机服务切换，不构成上游兼容及运行态发布验收。

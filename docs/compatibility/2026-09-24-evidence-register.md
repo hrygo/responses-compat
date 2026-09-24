@@ -22,8 +22,9 @@
 | tools.name_alias | tool_names.go 按 len(name)>64 改名并建立映射 | C；D5 的 64 限制属于 Chat Completions | 无当前 Responses 对应字段长度约束的充分证据；无 A/B 名称对照；不认定 Codex 或上游违规 |
 | reasoning.drop_id | schema.go 删除输入 reasoning 项的 id | C；D4 说明无状态 reasoning 重放 | 缺同账号/同路由 ID 来源和前后对照；“provider ID 不稳定”仅为待证假设 |
 | transport.sse_flush | SSE 响应头提前刷新 | C：fdd2415，server.go | 属于 Adapter 自身处理，不归责于 Codex/上游 |
-| response.name_scope | 当前 response_rewriter.go 按任意 name 递归恢复 | C | 通用化需增加非工具对象反例并按对象语义收窄；尚未在本轮证明真实误改事件 |
-| response.full_frame_limit | 原始帧及 JSON 恢复已有预算 | C | 需针对完整重写帧封装开销新增边界测试，不能声称现实现已完整满足最终契约 |
+| response.name_scope | 当前 response_rewriter.go 按任意 name 递归恢复 | C/T：临时副本中的 metadata.name 反例实际失败 | 已复现合成输入误改，待修复；不是新增真实用户会话事故证据 |
+| response.full_frame_limit | 原始帧及 JSON 恢复已有预算 | C/T：完整帧封装超限测试实际未返回错误 | 已复现输出帧预算缺口，待修复 |
+| transport.rewrite_boundary | 有别名时成功 text/plain 仍透传；Connection指定头仍转发 | C/T：本地 httptest 反例分别观察到200和头泄漏 | 仅本地合成验证，不涉及真实凭据外泄事件；任务5修复 |
 | state.previous_response_id | 当前无专属拒绝逻辑，名称映射为请求级 | C | 服务端保存的历史工具映射无法由当前资料保证；未验证，不新增普遍 422，不宣称完整支持 |
 
 源码依据：`schema.go`、`tool_names.go`、`response_rewriter.go`、`server.go`；相关合成样例在对应 `_test.go` 文件中。只有在实际运行并记录提交及结果后，才为某个具体用例登记新的 T 证据。
@@ -67,6 +68,46 @@
 `https://opencode.ai/docs/go/`
 
 端点表将 muse-spark-1.3-contributor 列在 `/responses` 下。用途：确认文档提供的端点对应；端点表不足以证明它承诺全量实现 OpenAI 的每项 Responses 功能。
+
+## O1–O6：OpenCode 同版本源码核验（2026-09-24）
+
+本机 CLI/App 实测均为 1.18.32；克隆标签 v1.18.32，固定提交 `545f51d26cc39a907d2867492d498d9607ea5fa4`。源码检查采用定点检索和调用链阅读，没有可用图谱工具，不作全仓穷尽审计声明。
+
+| 编号 | 核验范围 | 结果与边界 |
+|---|---|---|
+| O1 | 本机全局配置中的 Muse 路由字段 | opencode-go-responses 使用 @ai-sdk/openai、OpenCode Go 基址；未输出凭据，不把全局配置当具体会话抓包 |
+| O2 | provider/transform.ts 的 sanitizeOpenAISchema，以及 session/tools.ts 调用点 | MCP 路径保留引用及相邻 type/description；不一律展开或拒绝，不能等同于所有工具的完整处理 |
+| O3 | tool/json-schema.ts | 内置 Effect 工具生成路径展开可解析本地引用，残余递归引用和定义保留；预置 jsonSchema 与 MCP 不一定走此路径 |
+| O4 | session/llm/request.ts 与 provider/transform.ts | OpenAI 路径 strict=false、默认 store=false、非存储模式移除消息元数据 itemId；opencode 前缀路由添加会话头；这些不能直接变成代理全局清洗 |
+| O5 | mcp/catalog.ts 的 toolName，及 @ai-sdk/openai 3.0.88 发布源码 | MCP 名称在该函数中仅清理并拼接；SDK 默认 languageModel 创建 Responses 模型，函数参数使用 inputSchema。SDK tarball 与 npm shasum 一致；没有据此穷尽所有插件和包装层 |
+| O6 | desktop/src/main/sidecar.ts、electron.vite.config.ts | App sidecar 加载由 packages/opencode/dist/node 构建的 Server；CLI/App 复用服务端来源，不是两套独立协议实现 |
+
+源码依据（均固定同一提交，以下为仓库相对路径）：
+
+- `packages/opencode/src/provider/transform.ts`
+- `packages/opencode/src/session/tools.ts`
+- `packages/opencode/src/tool/json-schema.ts`
+- `packages/opencode/src/session/llm/request.ts`
+- `packages/opencode/src/provider/provider.ts`
+- `packages/opencode/src/mcp/catalog.ts`
+- `packages/desktop/src/main/sidecar.ts`
+- `packages/desktop/electron.vite.config.ts`
+
+固定源码入口：`https://github.com/anomalyco/opencode/tree/545f51d26cc39a907d2867492d498d9607ea5fa4`
+
+SDK 元数据：`https://registry.npmjs.org/@ai-sdk/openai/3.0.88`
+
+### 五项实际执行的纯函数实验
+
+直接提取已读源码中的纯函数，只移除 TypeScript 类型，在隔离 JS 上下文内运行合成输入；没有重写其算法、安装项目依赖或启动服务。
+
+1. sanitizeOpenAISchema：`$ref` + type 原样保留。
+2. sanitizeOpenAISchema：`$ref` + description 原样保留。
+3. sanitizeOpenAISchema：递归引用及定义保留。
+4. 内置引用处理 helper：引用目标与相邻 type 一致时展开成功，并删除已完全消解的定义。
+5. 内置引用处理 helper：递归残余引用及定义仍保留，不替换回边为 `{}`。
+
+证据类型为 C/T，不是 OpenCode 整套测试或真实 Muse 端到端验证。未验证运行时插件/项目配置覆盖，也没有证明安装包与标签源码的逐字节构建对应关系。上述结果不能把上游接受性或全工具兼容性标为已验证。
 
 ## 最小归因流程（待独立授权执行）
 
@@ -121,3 +162,9 @@
 case_id、rule_id、核实日期、组件版本、模型/路由范围、模式（无状态重放或服务端状态）、最小合成输入、原始状态/去敏错误、单项修改、修改后结果、契约依据、语义损失、归因与置信度、撤销条件。
 
 以上字段用于后续登记；当前新增一项历史日志 L 观测及离线 T 对照，见 INC-20260924-422-ref-sibling。没有新增上游端到端成功证据。
+
+## 执行计划的红灯验证（2026-09-24）
+
+在临时副本中运行计划任务1、2、5的五个测试函数，四个函数按预期因行为缺陷失败，冲突类型负向测试通过。新增的T证据包括：重复类型/注解被拒绝、普通metadata.name被误改、SSE输出封装超限未被拒绝、Connection指定头被转发和未知成功媒体类型未失败关闭。
+
+详细用例与结果见 `docs/superpowers/plans/2026-09-24-responses-compat-implementation.md`。没有修改生产测试或源码；未运行真实模型请求、未新增端到端成功证据，也未宣称完整测试套件已重新验证。

@@ -106,6 +106,7 @@ func TestHandlerRemovesReasoningItemIDsAndPreservesEncryptedPayload(t *testing.T
 }
 
 func TestHandlerPreservesUpstreamErrorStatusAndBody(t *testing.T) {
+	longName := "mcp__codex_apps__codex_document_control___execute_document_command"
 	for _, status := range []int{http.StatusBadRequest, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -117,7 +118,6 @@ func TestHandlerPreservesUpstreamErrorStatusAndBody(t *testing.T) {
 			base, _ := url.Parse(upstream.URL)
 			front := httptest.NewServer(NewHandler(base, upstream.Client()))
 			defer front.Close()
-			longName := "mcp__codex_apps__codex_document_control___execute_document_command"
 			requestBody := `{"model":"` + museModel + `","input":"ping","tools":[{"type":"function","name":"` + longName + `","parameters":{"type":"object"}}]}`
 			resp, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(requestBody))
 			if err != nil {
@@ -876,4 +876,114 @@ func TestHandlerAcceptsSupportedRefSiblingsAndClassifiesConflict(t *testing.T) {
 	if got := upstreamCalls.Load(); got != 1 {
 		t.Fatalf("upstream calls=%d want=1", got)
 	}
+}
+
+func TestHandlerRequestAdmissionContract(t *testing.T) {
+	cases := []struct {
+		name, body string
+		status     int
+		code       string
+	}{
+		{"malformed", `{"model":`, http.StatusBadRequest, ""},
+		{"array", `[]`, http.StatusBadRequest, ""},
+		{"null", `null`, http.StatusBadRequest, ""},
+		{"wrong model type", `{"model":17}`, http.StatusBadRequest, ""},
+		{"model checked before schema", `{"model":"not-allowed","tools":[{"parameters":17}]}`, http.StatusBadRequest, ""},
+		{"case-sensitive envelope", `{"Model":"muse-spark-1.3-contributor"}`, http.StatusUnprocessableEntity, "invalid_request"},
+		{"trailing object", `{"model":"muse-spark-1.3-contributor"} {}`, http.StatusBadRequest, ""},
+		{"invalid parameters", `{"model":"muse-spark-1.3-contributor","tools":[{"type":"function","name":"f","parameters":17}]}`, http.StatusUnprocessableEntity, "invalid_request"},
+		{"schema sibling conflict", `{"model":"muse-spark-1.3-contributor","tools":[{"type":"function","name":"f","parameters":{"$ref":"#/$defs/Text","type":"number","$defs":{"Text":{"type":"string"}}}}]}`, http.StatusUnprocessableEntity, "schema_ref_sibling_unsupported"},
+		{"oversized", strings.Repeat(" ", maxRequestBytes+1), http.StatusRequestEntityTooLarge, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				calls.Add(1)
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+			})}
+			handler := newTestConfiguredHandler(t, client)
+			recorder := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(tc.body))
+			handler.ServeHTTP(recorder, req)
+			if recorder.Code != tc.status {
+				t.Fatalf("status=%d want=%d body=%s", recorder.Code, tc.status, recorder.Body.String())
+			}
+			if tc.code != "" && !strings.Contains(recorder.Body.String(), `"code":"`+tc.code+`"`) {
+				t.Fatalf("body=%s missing code %q", recorder.Body.String(), tc.code)
+			}
+			if got := calls.Load(); got != 0 {
+				t.Fatalf("upstream calls=%d want=0 (name=%s)", got, tc.name)
+			}
+		})
+	}
+}
+
+func TestHandlerPreservesSuccessfulCreatedStatus(t *testing.T) {
+	const originalName = "mcp__codex_apps__codex_document_control___execute_document_command"
+	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"output":[{"type":"function_call","name":"` + functionToolAlias(originalName) + `"}]}`)),
+		}, nil
+	})}
+	handler := newTestConfiguredHandler(t, client)
+	body := `{"model":"muse-spark-1.3-contributor","tools":[{"type":"function","name":"` + originalName + `","parameters":{"type":"object"}}]}`
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+	if recorder.Code != http.StatusCreated || !strings.Contains(recorder.Body.String(), `"name":"`+originalName+`"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type closeTrackingReadCloser struct {
+	reader *strings.Reader
+	closes int
+}
+
+func (r *closeTrackingReadCloser) Read(p []byte) (int, error) { return r.reader.Read(p) }
+func (r *closeTrackingReadCloser) Close() error               { r.closes++; return nil }
+
+func TestHandlerClosesUpstreamBodyAcrossResponseBranches(t *testing.T) {
+	const originalName = "mcp__codex_apps__codex_document_control___execute_document_command"
+	cases := []struct {
+		name, contentType, body string
+		status                  int
+		wantStatus              int
+	}{
+		{"normal rewrite", "application/json", `{"output":[{"type":"function_call","name":"` + functionToolAlias(originalName) + `"}]}`, http.StatusOK, http.StatusOK},
+		{"rejected media type", "text/plain", "secret upstream body", http.StatusOK, http.StatusBadGateway},
+		{"rewrite failure", "application/json", "not json", http.StatusOK, http.StatusBadGateway},
+		{"non-success passthrough", "text/plain", "upstream error", http.StatusTooManyRequests, http.StatusTooManyRequests},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tracked := &closeTrackingReadCloser{reader: strings.NewReader(tc.body)}
+			client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: tc.status, Header: http.Header{"Content-Type": {tc.contentType}}, Body: tracked}, nil
+			})}
+			handler := newTestConfiguredHandler(t, client)
+			body := `{"model":"muse-spark-1.3-contributor","tools":[{"type":"function","name":"` + originalName + `","parameters":{"type":"object"}}]}`
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", recorder.Code, tc.wantStatus, recorder.Body.String())
+			}
+			if tracked.closes != 1 {
+				t.Fatalf("upstream Body.Close calls=%d want=1", tracked.closes)
+			}
+		})
+	}
+}
+
+func newTestConfiguredHandler(t *testing.T, client *http.Client) http.Handler {
+	t.Helper()
+	config := defaultConfig()
+	config.UpstreamBaseURL = "https://upstream.example/v1"
+	handler, err := NewConfiguredHandler(config, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
 }

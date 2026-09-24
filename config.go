@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -48,7 +47,7 @@ func defaultConfig() RuntimeConfig {
 		Listen:               listenAddress,
 		UpstreamBaseURL:      upstreamBase,
 		Models:               []string{museModel},
-		Profile:              "muse",
+		Profile:              profileMuse,
 		Policy:               musePolicy(),
 		ExtraRequestHeaders:  []string{},
 		ExtraResponseHeaders: []string{},
@@ -88,9 +87,9 @@ func decodeConfig(data []byte) (RuntimeConfig, error) {
 
 	var policy CompatibilityPolicy
 	switch raw.Profile {
-	case "muse":
+	case profileMuse:
 		policy = musePolicy()
-	case "passthrough":
+	case profilePassthrough:
 		policy = passthroughPolicy()
 	default:
 		return RuntimeConfig{}, errors.New("unknown compatibility profile")
@@ -194,87 +193,6 @@ func decodeExtraHeaderNames(raw json.RawMessage, direction string) ([]string, er
 	return normalized, nil
 }
 
-func normalizeExtraHeaderNames(names []string, direction string) ([]string, error) {
-	if direction != "request" && direction != "response" {
-		return nil, errors.New("invalid header direction")
-	}
-	seen := make(map[string]struct{}, len(names))
-	result := make([]string, 0, len(names))
-	for _, name := range names {
-		if !validHeaderName(name) {
-			return nil, errors.New("invalid extra header name")
-		}
-		canonical := http.CanonicalHeaderKey(name)
-		lower := strings.ToLower(canonical)
-		if isHopByHopHeader(lower) || isControlledHeader(lower) || isAlreadyForwardedHeader(lower, direction) {
-			return nil, errors.New("extra header is controlled or hop-by-hop")
-		}
-		if _, exists := seen[lower]; exists {
-			continue
-		}
-		seen[lower] = struct{}{}
-		result = append(result, canonical)
-	}
-	return result, nil
-}
-
-func validHeaderName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		if !isHTTPTokenByte(name[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func isHTTPTokenByte(value byte) bool {
-	if value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' {
-		return true
-	}
-	switch value {
-	case 33, 35, 36, 37, 38, 39, 42, 43, 45, 46, 94, 95, 96, 124, 126:
-		return true
-	default:
-		return false
-	}
-}
-
-func isHopByHopHeader(lower string) bool {
-	switch lower {
-	case "connection", "proxy-connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
-		return true
-	default:
-		return false
-	}
-}
-
-func isControlledHeader(lower string) bool {
-	switch lower {
-	case "host", "content-length", "content-type", "content-encoding", "accept-encoding":
-		return true
-	default:
-		return false
-	}
-}
-
-func isAlreadyForwardedHeader(lower, direction string) bool {
-	var names []string
-	if direction == "request" {
-		names = forwardedRequestHeaders
-	} else {
-		names = forwardedResponseHeaders
-	}
-	for _, name := range names {
-		if strings.EqualFold(name, lower) {
-			return true
-		}
-	}
-	return false
-}
-
 func validateRuntimeConfig(config RuntimeConfig) error {
 	if _, err := validateListenAddress(config.Listen); err != nil {
 		return err
@@ -295,7 +213,7 @@ func validateRuntimeConfig(config RuntimeConfig) error {
 		}
 		seenModels[model] = struct{}{}
 	}
-	if config.Profile != "muse" && config.Profile != "passthrough" {
+	if config.Profile != profileMuse && config.Profile != profilePassthrough {
 		return errors.New("unknown compatibility profile")
 	}
 	if err := validateCompatibilityPolicy(config.Policy); err != nil {

@@ -34,6 +34,12 @@ go run . --config examples/muse.json
 - `transforms` 可在预设上独立覆盖 `schema_refs`、`recursive_refs`、`tool_name_max_bytes` 与 `reasoning_ids`；`tool_name_max_bytes: null` 表示明确关闭别名，省略则继承预设，数值 `0` 不接受。
 - `extra_request_headers` 和 `extra_response_headers` 只列出允许透传的头名，不配置头值。授权等敏感值仍由调用方/CLIProxyAPI 在请求中提供；程序不保存或记录请求正文与凭据。
 
+## 源码职责
+
+- `server.go`：handler 配置、请求准入与上游 HTTP 请求编排；`headers.go`：头部 allowlist、Connection 点名和受控头过滤。
+- `request_normalizer.go`：请求校验与变换顺序；`schema.go`、`schema_refs.go`：工具参数 Schema 的本地引用展开与预算。
+- `response_rewriter.go`：JSON 响应中的工具名恢复；`response_sse.go`：SSE 行/帧处理、名称恢复和失败事件；`upstream_response.go`：上游响应媒体分类、状态/头复制及流式转发。
+
 ## 响应与安全边界
 
 - 未发生工具名改写时，响应正文按流转发；SSE 会在首个事件前刷新响应头。额外头仍受 allowlist、逐跳头、`Connection` 指定头和受控长度/编码头过滤。

@@ -7,7 +7,7 @@ import (
 )
 
 func expandRefWithSiblings(node map[string]any, root any, active map[string]bool, depth int, budget *schemaBudget) (any, error) {
-	return expandRefNodeWithRecursiveRefs(node, root, active, depth, budget, "empty_schema")
+	return expandRefNodeWithRecursiveRefs(node, root, active, depth, budget, recursiveRefsEmptySchema)
 }
 
 func expandRefNodeWithRecursiveRefs(node map[string]any, root any, active map[string]bool, depth int, budget *schemaBudget, recursiveRefs string) (any, error) {

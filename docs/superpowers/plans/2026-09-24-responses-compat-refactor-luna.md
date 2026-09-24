@@ -7,7 +7,7 @@
 - Goal：让 HTTP 编排、头部规则、请求归一化、Schema 算法、JSON 恢复、SSE 帧处理分别有清晰代码边界，以便后续单项兼容规则可以独立修改和验证。
 - Architecture：新增 4 个生产文件，迁移既有实现；只对头部复制的相同机制做小范围去重，并集中定义已有策略字符串常量。不同协议语义不统一成通用框架。
 - Tech Stack：`module responses-compat`，`go 1.27`，标准库、`testing`、`httptest`；不新增依赖。
-- 状态：**方案已形成，重构尚未实施**。当前授权只覆盖分析与本方案文档，不包括业务代码修改、提交、推送、发布、真实模型调用或服务切换。
+- 状态：方案形成时授权仅覆盖分析与本方案文档。用户于 2026-09-24 明确要求在独立 worktree 实施；本次授权覆盖该 worktree 内的代码和文档修改及离线验证，不包括提交、推送、发布、真实模型调用或服务切换。
 - 执行方式：获实现授权后，由 Luna 顺序执行；可使用当前可用的 `executing-plans` 技能。本方案不授权启动子代理，不要求安装缺失技能。
 
 ## 基线与证据
@@ -143,12 +143,12 @@ main → runCommand → loadConfig/decodeConfig → runServer
 
 **文件：**`server_test.go`、`config_test.go`（修改）；`headers_test.go`（拟新增）。
 
-- [ ] 核对 `git status --short`、`git rev-parse HEAD` 和 `go version`。不同于本方案基线时先检查差异；不覆盖并行改动，不使用 reset/checkout 清除工作。
-- [ ] 在 `server_test.go` 新增 `TestHandlerRequestAdmissionContract`，使用现有 `roundTripperFunc` 和计数器，按第 7 节固定 400/413/422 及零上游调用。
-- [ ] 在 `headers_test.go` 新增第 7 节的配置/复制矩阵，先直接测试现有函数，不依赖尚未新增的辅助函数。
-- [ ] 在 `server_test.go` 新增 `TestHandlerPreservesSuccessfulCreatedStatus`，验证带别名的 JSON 201 恢复后仍为 201。
-- [ ] 新增 `TestHandlerClosesUpstreamBodyAcrossResponseBranches`，使用只在测试中声明的 close-tracking ReadCloser（包装 `strings.Reader`，Close 增加计数），测试正常、拒绝和恢复失败分支 Close 恰好一次。
-- [ ] 跑聚焦测试及全量测试，将新测例是否通过写入执行记录。不得把以下方案中的测试当成本轮已执行。
+- [x] 核对 `git status --short`、`git rev-parse HEAD` 和 `go version`。不同于本方案基线时先检查差异；不覆盖并行改动，不使用 reset/checkout 清除工作。
+- [x] 在 `server_test.go` 新增 `TestHandlerRequestAdmissionContract`，使用现有 `roundTripperFunc` 和计数器，按第 7 节固定 400/413/422 及零上游调用。
+- [x] 在 `headers_test.go` 新增第 7 节的配置/复制矩阵，先直接测试现有函数，不依赖尚未新增的辅助函数。
+- [x] 在 `server_test.go` 新增 `TestHandlerPreservesSuccessfulCreatedStatus`，验证带别名的 JSON 201 恢复后仍为 201。
+- [x] 新增 `TestHandlerClosesUpstreamBodyAcrossResponseBranches`，使用只在测试中声明的 close-tracking ReadCloser（包装 `strings.Reader`，Close 增加计数），测试正常、拒绝和恢复失败分支 Close 恰好一次。
+- [x] 跑聚焦测试及全量测试，将新测例是否通过写入执行记录。不得把以下方案中的测试当成本轮已执行。
 
 ```sh
 go test ./... -run 'Test(HandlerRequestAdmissionContract|HeaderPolicyContract|HeaderCopyPreservesValues|HandlerPreservesSuccessfulCreatedStatus|HandlerClosesUpstreamBodyAcrossResponseBranches)$' -count=1
@@ -461,17 +461,17 @@ go build -trimpath -o "$build_dir/responses-compat" .
 
 ## Checklist（以下为实施后的验收，当前未勾选）
 
-- [ ] 4 个新增生产文件各自负责明确边界，所有生产文件仍为 `package main`。
-- [ ] 新增刻画测试在迁移前后均通过；原有 Test 名称全部保留，无新增 Skip。
-- [ ] 400/413/422/502、非 2xx 原样正文和成功 JSON 状态码保持一致。
-- [ ] passthrough 与 no-change 字节相等；现有 64 字节别名结果相等。
-- [ ] 默认/extra/dynamic Connection 头部规则矩阵通过，无新增受控头泄漏。
-- [ ] JSON 失败仍在响应提交前；SSE 首事件前 Flush、流式输出和取消传播测试通过。
-- [ ] SSE 完整帧预算、未知事件路径、EOF、终止 response.failed 测试通过。
-- [ ] `resp.Body` 全部分支关闭，调用方配置/client 不被修改；多 handler 隔离测试通过。
-- [ ] 普通测试、race、vet、临时构建和 diff 检查均通过。
-- [ ] `go.mod`、examples、启动参数/默认值、部署文件、运行中的服务未改变；无新依赖。
-- [ ] README 当前代码地图与实际一致；历史证据未篡改，不声称真实上游兼容已验证。
+- [x] 4 个新增生产文件各自负责明确边界，所有生产文件仍为 `package main`。
+- [x] 新增刻画测试在迁移前后均通过；原有 Test 名称全部保留，无新增 Skip。
+- [x] 400/413/422/502、非 2xx 原样正文和成功 JSON 状态码保持一致。
+- [x] passthrough 与 no-change 字节相等；现有 64 字节别名结果相等。
+- [x] 默认/extra/dynamic Connection 头部规则矩阵通过，无新增受控头泄漏。
+- [x] JSON 失败仍在响应提交前；SSE 首事件前 Flush、流式输出和取消传播测试通过。
+- [x] SSE 完整帧预算、未知事件路径、EOF、终止 response.failed 测试通过。
+- [x] `resp.Body` 全部分支关闭，调用方配置/client 不被修改；多 handler 隔离测试通过。
+- [x] 普通测试、race、vet、临时构建和 diff 检查均通过。
+- [x] `go.mod`、examples、启动参数/默认值、部署文件、运行中的服务未改变；无新依赖。
+- [x] README 当前代码地图与实际一致；历史证据未篡改，不声称真实上游兼容已验证。
 
 不设人为覆盖率阈值，也不把“文件变短”或“146 项数量没变”单独当作正确性证明。新测试加入后通过项数应增长或因表结构改变而变化；关键是旧断言保留及新边界得到实际验证。
 
@@ -497,6 +497,15 @@ go build -trimpath -o "$build_dir/responses-compat" .
 | 5 | README 与证据登记 | 当前源码地图准确、历史事实不改写 | 文档路径核查、diff 自审 |
 | 6 | 全项目 | 所有验收项得到实际证据，业务范围无扩张 | test/race/vet/build/diff 全套 |
 
-- [ ] 执行前确认获得“实施重构”授权；本文件自身不是授权。
-- [ ] 按上表顺序完成，不同时重排文件、修改行为、更新工具链或引入依赖。
-- [ ] 完成后报告实际改动文件、各命令结果、未验证的真实上游行为；只称离线重构完成。
+- [x] 执行前确认获得“实施重构”授权；本文件自身不是授权。
+- [x] 按上表顺序完成，不同时重排文件、修改行为、更新工具链或引入依赖。
+- [x] 完成后报告实际改动文件、各命令结果、未验证的真实上游行为；只称离线重构完成。
+
+
+## 本次执行记录（2026-09-24）
+
+- Worktree：`/Users/hrygo/.codex/worktrees/responses-compat-refactor/responses-compat`；分支 `codex/responses-compat-refactor`；起始 HEAD `3d60f95`（包含本计划文档的提交）。起始工作区干净；相较文档分析时记录的源码提交，仅 HEAD 先包含执行计划文档，保留该提交并未重写历史。
+- 新增生产边界：`headers.go`、`request_normalizer.go`、`response_sse.go`、`upstream_response.go`；保留单一 `package main`、Go 标准库及原公开/兼容入口。未改 `go.mod`、示例、启动参数/默认值或部署文件。
+- 新增契约覆盖：请求准入和零上游调用、请求/响应头策略与多值复制、JSON 201 状态、上游 Body 关闭、SSE 长行/CRLF/多 data/EOF/短写，以及上游响应决策矩阵。测试迁移后原有 88 个 Test 函数名称全部保留；当前共 98 个 Test 函数。
+- 最终离线验证（Go 1.27.1 darwin/arm64）：聚焦测试通过；`go test ./... -count=1` 通过；`go test -race ./... -count=1` 报告 183 passed；`go vet ./...` 通过；`go build -trimpath` 输出到本次创建并随后清理的临时目录，成功且产物非空；`git diff --check` 通过。
+- 仅为离线重构与验证；未调用真实上游、未读真实凭据/日志、未切换或发布运行服务。因此真实 Muse/OpenCode Go 上游契约及运行态仍未验证。

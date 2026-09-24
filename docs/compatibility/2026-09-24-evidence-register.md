@@ -193,3 +193,25 @@ case_id、rule_id、核实日期、组件版本、模型/路由范围、模式�
 - 仓库根目录的 `muse-codex-adapter` 是被忽略的旧构建产物，构建元数据显示 module `muse-codex-adapter`、revision `fdd24150b7821da633986984940f16e47a41520e`、`vcs.modified=true`；保留原文件，不纳入 Git，也不将其当作运行服务回退备份。`.gitignore` 继续忽略此旧产物，并新增忽略当前默认输出 `responses-compat` 与 macOS `.DS_Store`。
 - 运行态身份仍是旧 LaunchAgent/二进制；目录迁移不改变运行服务。服务改名或切换需按部署清单另行授权。
 - Git remote 仍为空；当前 GitHub 连接账号中未找到名为 `responses-compat` 的目标仓库。用户已要求提交 GitHub，但新仓库公开/私有可见性未指定，因此本轮不创建远端、不推送、不打标签。
+
+## 凭据轮换后的真实验证（2026-09-24，22:14 CST）
+
+仅记录此轮实际结果；测试使用当前本机 CLIProxyAPI 配置中的凭据，未输出、复制或写入凭据。当前运行态：LaunchAgent `com.hrygo.responses-compat` 为 running，PID 31347，二进制 `/Users/hrygo/.local/bin/responses-compat`，监听 `127.0.0.1:18317`；CLIProxyAPI 监听 `127.0.0.1:8317`。`GET /healthz` 返回 HTTP 204。运行二进制构建元数据为 Go 1.27.1、revision `72c5a6d4ccebbbc8ffcf715e766f506770f8dacf`、`vcs.modified=false`；OpenCode CLI `1.18.32`；CLIProxyAPI `7.3.15`。
+
+| 用例 | 结果 | 可支持的结论 |
+|---|---|---|
+| E0：原始 HTTP 直连 OpenCode Go Responses API，携带 `x-opencode-session` | 轮换后的主、备凭据各返回 HTTP 200；将 `max_output_tokens` 设为 256 的主凭据请求仍为 `incomplete`，`incomplete_details.reason=max_output_tokens`，256 输出 token 均计入 reasoning，未产生文本 | 凭据被服务接受、请求到达 Responses API；本次预算不足以证明完整文本生成成功。未继续提高预算，避免无谓消耗。 |
+| E1：OpenCode CLI 直连 | `opencode run --model opencode-go-responses/muse-spark-1.3-contributor ...` 退出码 0，模型输出精确为 `OPENCODE_CLI_DIRECT_OK` | OpenCode CLI 当前可直接通过其 Responses provider 配置调用 Muse Spark 完成该最小文本用例；不代表 Codex/App 或工具调用能力。 |
+| E3：当前 CLIProxyAPI Muse 路由经 Adapter 的 SSE 工具调用 | 请求模型 alias `opencode-go-muse-spark-1.3`，HTTP 200、`text/event-stream`，末尾 `response.completed`；90 字节函数工具名经 SSE 正确恢复，arguments 为 `{"echo":"E3_TOOL_OK"}` | 当前已配置主链路通过真实上游调用完成工具选择与 SSE 名称恢复。此用例为单轮工具调用；不据此宣称全量 Responses 兼容。 |
+| E2：CLIProxyAPI 绕过 Adapter 的对照 | 未执行 | 运行配置的 Muse provider 当前 base URL 明确指向 Adapter (`127.0.0.1:18317`)；未改动现有生产配置或路由，因此本轮无法从该路由隔离 Adapter。需先准备独立 CLIProxyAPI 配置/端口后再测。 |
+| E4：逐条隔离兼容规则 | 未执行 | 当前运行 Adapter 使用 Muse 预设；本轮未启动独立隔离实例来分别关闭/启用单条规则，故不能判断各条变换必要性。 |
+
+此前本轮曾用下游 alias 误以原始模型名直请求 CLIProxyAPI，观察到 `unknown provider for model`；随后按已配置 alias 正确路由。E0 首次未带 `x-opencode-session` 时返回 `MissingSessionID`；补齐该会话头后才得到上述 HTTP 200。测试未修改 CLIProxyAPI 配置、LaunchAgent 或运行服务，也未创建版本标签/发布。
+
+**验收状态：部分真实验证通过，非完整发布验收。** E1 CLI 直连最小文本用例及 E3 当前主链路单轮 SSE 工具调用通过；E0 只证明服务接受请求，生成受 reasoning token 上限截断；E2、E4 仍缺对照。OpenCode App、Codex、递归 Schema 多轮工具续传本轮未覆盖。不得据此发布 v0.2.0。
+
+## 离线职责拆分复核（2026-09-24）
+
+- 实施分支：`codex/responses-compat-refactor`，独立 worktree；执行计划基于包含本计划文档的 `3d60f95` HEAD。该 HEAD 与计划基线中的源码提交不同仅因计划文档提交；执行前 worktree 干净，源码基线测试通过。
+- 当前源码位置：请求入口/变换顺序 `request_normalizer.go`；Schema 展开 `schema.go`、`schema_refs.go`；头部策略 `headers.go`；JSON/SSE 恢复分别为 `response_rewriter.go`、`response_sse.go`；上游响应转发 `upstream_response.go`，HTTP 请求编排 `server.go`。
+- 本轮验证范围为本地 Go 单元测试、race、vet 与离线构建；结果以计划执行记录中的实际命令结果为准。没有调用真实上游、读取真实日志/凭据、切换或发布服务，不新增真实提供方证据，也不关闭本登记中尚未解决的运行态问题。

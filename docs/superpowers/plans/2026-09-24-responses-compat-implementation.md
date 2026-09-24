@@ -14,7 +14,7 @@
 
 **Evidence:** `docs/compatibility/2026-09-24-evidence-register.md`
 
-**Date / status:** 2026-09-24；实施中（分支 `codex/responses-compat`）。任务 1 已完成实现与验证；任务 2–6 待实施。真实上游、服务切换和发布仍受任务 7 授权门约束。
+**Date / status:** 2026-09-24；实施中（分支 `codex/responses-compat`）。任务 1 已完成实现与验证；任务 1–2 已完成实现与验证；任务 3–6 待实施。真实上游、服务切换和发布仍受任务 7 授权门约束。
 
 ## Global Constraints
 
@@ -169,11 +169,11 @@ return nil, &normalizationError{
 
 ## Task 2：修正响应恢复范围和完整 SSE 预算
 
-**Files:** response_rewriter.go、response_rewriter_test.go。
+**Files:** response_rewriter.go、response_rewriter_test.go；server_test.go 仅更新既有 SSE 压力测试的 response.completed 事件包装。
 
 **Consumes/Produces:** 保留 restoreToolNamesInJSON、rewriteSSEFrame、streamSSEWithToolNameRestore 签名；改变误改范围与完整帧超限行为。
 
-- [ ] **2.1 写反例并确认当前红灯。** 在 response_rewriter_test.go 增加以下测试；补入 errors import。
+- [x] **2.1 写反例并确认当前红灯。** 在 response_rewriter_test.go 增加以下测试；补入 errors import。
 
 ```go
 func TestRestoreIgnoresNonToolMetadataName(t *testing.T) {
@@ -196,10 +196,10 @@ func TestSSEBudgetIncludesEnvelope(t *testing.T) {
 }
 ```
 
-- [ ] **2.2 统一语义范围。** 用同一套已识别路径供大小预估和实际改写使用：根 function_call；response output 中的 function_call；response tools/namespace 中的 function 定义；output_item.added/done 的 item；function_call_arguments.delta/done 的顶层 name。明确 response.created/in_progress/completed/incomplete/failed 的 response 包装。不能深入 metadata 或 arguments；未知事件默认保持，不添加正则文本替换。
-- [ ] **2.3 完整帧预算。** 在构造新帧前计算保留的 event/id/comment 行、data 前缀、改写 JSON 及行尾总长度；超限返回 errResponseRewriteLimit。不要仅给 JSON 64 MiB，再在其外无界附加封装。保留原始帧上限。
-- [ ] **2.4 验证完整矩阵。** 单独断言 LF/CRLF、多行 data、EOF 尾帧、无工具映射原样返回、完整帧恰好上限通过/多一字节拒绝。保留 response.failed 终止且不继续 [DONE] 的现有测试；检查测试夹具不能因收窄路径而意外失去扩展压力。
-- [ ] **2.5 绿灯和提交。** `go test ./... -run 'TestRestore|TestRewrite|TestSSE|TestStream|TestWrite' -count=1` 后运行全量/race/vet；提交 `fix: scope tool name restoration and bound full SSE frames`。
+- [x] **2.2 统一语义范围。** 用同一套已识别路径供大小预估和实际改写使用：根 function_call；response output 中的 function_call；response tools/namespace 中的 function 定义；output_item.added/done 的 item；function_call_arguments.delta/done 的顶层 name。明确 response.created/in_progress/completed/incomplete/failed 的 response 包装。不能深入 metadata 或 arguments；未知事件默认保持，不添加正则文本替换。
+- [x] **2.3 完整帧预算。** 在构造新帧前计算保留的 event/id/comment 行、data 前缀、改写 JSON 及行尾总长度；超限返回 errResponseRewriteLimit。不要仅给 JSON 64 MiB，再在其外无界附加封装。保留原始帧上限。
+- [x] **2.4 验证完整矩阵。** 单独断言 LF/CRLF、多行 data、EOF 尾帧、无工具映射原样返回、完整帧恰好上限通过/多一字节拒绝。保留 response.failed 终止且不继续 [DONE] 的现有测试；检查测试夹具不能因收窄路径而意外失去扩展压力。
+- [x] **2.5 绿灯和提交。** `go test ./... -run 'TestRestore|TestRewrite|TestSSE|TestStream|TestWrite' -count=1` 后运行全量/race/vet；提交 `fix: scope tool name restoration and bound full SSE frames`。
 
 ## Task 3：引入最小策略，不搬运客户端行为
 

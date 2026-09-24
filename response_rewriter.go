@@ -25,6 +25,19 @@ var (
 var rewriteFailureSequence atomic.Uint64
 
 func restoreToolNamesInJSON(data []byte, aliases map[string]string, maxOutputBytes int) ([]byte, bool, error) {
+	return restoreToolNames(data, aliases, maxOutputBytes, "", true)
+}
+
+func restoreToolNamesInSSEJSON(data []byte, aliases map[string]string, maxOutputBytes int, eventType string) ([]byte, bool, error) {
+	return restoreToolNames(data, aliases, maxOutputBytes, eventType, false)
+}
+
+type toolNameReplacement struct {
+	object   map[string]any
+	original string
+}
+
+func restoreToolNames(data []byte, aliases map[string]string, maxOutputBytes int, eventType string, responseJSON bool) ([]byte, bool, error) {
 	if len(aliases) == 0 {
 		return data, false, nil
 	}
@@ -38,15 +51,40 @@ func restoreToolNamesInJSON(data []byte, aliases map[string]string, maxOutputByt
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, false, errInvalidJSONResponse
 	}
-	_, changed, err := restoredJSONEncodedSize(response, "", aliases, int64(maxOutputBytes))
+
+	targets := collectToolNameTargets(response, eventType, responseJSON)
+	replacements := make([]toolNameReplacement, 0, len(targets))
+	for _, target := range targets {
+		name, ok := target["name"].(string)
+		if !ok {
+			continue
+		}
+		original, exists := aliases[name]
+		if exists && original != name {
+			replacements = append(replacements, toolNameReplacement{object: target, original: original})
+		}
+	}
+	if len(replacements) == 0 {
+		return data, false, nil
+	}
+
+	finalSize, err := encodedJSONSize(response)
 	if err != nil {
 		return nil, false, err
 	}
-	if !changed {
-		return data, false, nil
+	for _, replacement := range replacements {
+		name := replacement.object["name"].(string)
+		finalSize, err = replaceEncodedJSONStringSize(finalSize, name, replacement.original)
+		if err != nil {
+			return nil, false, err
+		}
 	}
-	if !restoreAliasedToolNames(response, aliases) {
-		return data, false, nil
+	if maxOutputBytes < 0 || finalSize > int64(maxOutputBytes) {
+		return nil, false, errResponseRewriteLimit
+	}
+
+	for _, replacement := range replacements {
+		replacement.object["name"] = replacement.original
 	}
 	var out bytes.Buffer
 	encoder := json.NewEncoder(&out)
@@ -61,10 +99,110 @@ func restoreToolNamesInJSON(data []byte, aliases map[string]string, maxOutputByt
 	return encoded, true, nil
 }
 
-// restoredJSONEncodedSize preflights compact JSON output so alias expansion cannot grow an unbounded buffer.
-func restoredJSONEncodedSize(value any, fieldName string, aliases map[string]string, limit int64) (int64, bool, error) {
+func collectToolNameTargets(value any, eventType string, responseJSON bool) []map[string]any {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	targets := make([]map[string]any, 0)
+	if responseJSON {
+		rootType, _ := root["type"].(string)
+		if rootType == "function_call" {
+			appendToolNameTarget(&targets, root)
+		}
+		if isResponseLifecycleEvent(rootType) {
+			if response, ok := root["response"].(map[string]any); ok {
+				collectResponseToolNameTargets(response, &targets)
+			}
+			return targets
+		}
+		collectResponseToolNameTargets(root, &targets)
+		return targets
+	}
+
+	if eventType == "" {
+		eventType, _ = root["type"].(string)
+	}
+	switch eventType {
+	case "response.output_item.added", "response.output_item.done":
+		if item, ok := root["item"]; ok {
+			collectFunctionCallTargets(item, &targets)
+			collectFunctionDefinitionTargets(item, &targets)
+		}
+	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+		appendToolNameTarget(&targets, root)
+	default:
+		if isResponseLifecycleEvent(eventType) {
+			if response, ok := root["response"].(map[string]any); ok {
+				collectResponseToolNameTargets(response, &targets)
+			}
+		}
+	}
+	return targets
+}
+
+func isResponseLifecycleEvent(eventType string) bool {
+	switch eventType {
+	case "response.created", "response.in_progress", "response.completed", "response.incomplete", "response.failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func collectResponseToolNameTargets(response map[string]any, targets *[]map[string]any) {
+	if output, exists := response["output"]; exists {
+		collectFunctionCallTargets(output, targets)
+	}
+	if tools, exists := response["tools"]; exists {
+		collectFunctionDefinitionTargets(tools, targets)
+	}
+	if namespace, exists := response["namespace"]; exists {
+		collectFunctionDefinitionTargets(namespace, targets)
+	}
+}
+
+func collectFunctionCallTargets(value any, targets *[]map[string]any) {
+	switch node := value.(type) {
+	case []any:
+		for _, item := range node {
+			collectFunctionCallTargets(item, targets)
+		}
+	case map[string]any:
+		if node["type"] == "function_call" {
+			appendToolNameTarget(targets, node)
+		}
+	}
+}
+
+func collectFunctionDefinitionTargets(value any, targets *[]map[string]any) {
+	switch node := value.(type) {
+	case []any:
+		for _, item := range node {
+			collectFunctionDefinitionTargets(item, targets)
+		}
+	case map[string]any:
+		switch node["type"] {
+		case "function":
+			appendToolNameTarget(targets, node)
+		case "namespace":
+			if tools, exists := node["tools"]; exists {
+				collectFunctionDefinitionTargets(tools, targets)
+			}
+		}
+	}
+}
+
+func appendToolNameTarget(targets *[]map[string]any, object map[string]any) {
+	if _, ok := object["name"].(string); ok {
+		*targets = append(*targets, object)
+	}
+}
+
+func encodedJSONSize(value any) (int64, error) {
+	const maxSize = int64(1<<63 - 1)
 	add := func(current, amount int64) (int64, error) {
-		if amount < 0 || amount > limit || current > limit-amount {
+		if amount < 0 || current > maxSize-amount {
 			return 0, errResponseRewriteLimit
 		}
 		return current + amount, nil
@@ -72,82 +210,87 @@ func restoredJSONEncodedSize(value any, fieldName string, aliases map[string]str
 
 	switch node := value.(type) {
 	case nil:
-		return 4, false, nil
+		return 4, nil
 	case bool:
 		if node {
-			return 4, false, nil
+			return 4, nil
 		}
-		return 5, false, nil
+		return 5, nil
 	case json.Number:
-		return int64(len(node)), false, nil
+		return int64(len(node)), nil
 	case string:
-		changed := false
-		if fieldName == "name" {
-			if original, exists := aliases[node]; exists {
-				node = original
-				changed = true
-			}
-		}
-		size := encodedJSONQuotedStringSize(node)
-		if size > limit {
-			return 0, changed, errResponseRewriteLimit
-		}
-		return size, changed, nil
+		return encodedJSONQuotedStringSize(node), nil
 	case []any:
 		size := int64(2)
-		changed := false
 		for index, child := range node {
 			if index > 0 {
 				var err error
 				size, err = add(size, 1)
 				if err != nil {
-					return 0, changed, err
+					return 0, err
 				}
 			}
-			childSize, childChanged, err := restoredJSONEncodedSize(child, "", aliases, limit)
+			childSize, err := encodedJSONSize(child)
 			if err != nil {
-				return 0, changed || childChanged, err
+				return 0, err
 			}
 			size, err = add(size, childSize)
 			if err != nil {
-				return 0, changed || childChanged, err
+				return 0, err
 			}
-			changed = changed || childChanged
 		}
-		return size, changed, nil
+		return size, nil
 	case map[string]any:
 		size := int64(2)
-		changed := false
 		index := 0
 		for key, child := range node {
 			if index > 0 {
 				var err error
 				size, err = add(size, 1)
 				if err != nil {
-					return 0, changed, err
+					return 0, err
 				}
 			}
-			keySize := encodedJSONQuotedStringSize(key) + 1
-			var err error
+			keySize, err := add(encodedJSONQuotedStringSize(key), 1)
+			if err != nil {
+				return 0, err
+			}
 			size, err = add(size, keySize)
 			if err != nil {
-				return 0, changed, err
+				return 0, err
 			}
-			childSize, childChanged, err := restoredJSONEncodedSize(child, key, aliases, limit)
+			childSize, err := encodedJSONSize(child)
 			if err != nil {
-				return 0, changed || childChanged, err
+				return 0, err
 			}
 			size, err = add(size, childSize)
 			if err != nil {
-				return 0, changed || childChanged, err
+				return 0, err
 			}
-			changed = changed || childChanged
 			index++
 		}
-		return size, changed, nil
+		return size, nil
 	default:
-		return 0, false, errors.New("unsupported value in Muse JSON response")
+		return 0, errors.New("unsupported value in Responses JSON")
 	}
+}
+
+func replaceEncodedJSONStringSize(size int64, previous, replacement string) (int64, error) {
+	previousSize := encodedJSONQuotedStringSize(previous)
+	replacementSize := encodedJSONQuotedStringSize(replacement)
+	const maxSize = int64(1<<63 - 1)
+	if replacementSize >= previousSize {
+		delta := replacementSize - previousSize
+		if size > maxSize-delta {
+			return 0, errResponseRewriteLimit
+		}
+		return size + delta, nil
+	}
+	delta := previousSize - replacementSize
+	if delta > size {
+		return 0, errResponseRewriteLimit
+	}
+	return size - delta, nil
 }
 
 // encodedJSONQuotedStringSize matches encoding/json string quoting with HTML escaping disabled.
@@ -174,27 +317,6 @@ func encodedJSONQuotedStringSize(value string) int64 {
 	return size
 }
 
-func restoreAliasedToolNames(value any, aliases map[string]string) bool {
-	changed := false
-	switch node := value.(type) {
-	case []any:
-		for _, child := range node {
-			changed = restoreAliasedToolNames(child, aliases) || changed
-		}
-	case map[string]any:
-		if name, ok := node["name"].(string); ok {
-			if original, exists := aliases[name]; exists {
-				node["name"] = original
-				changed = true
-			}
-		}
-		for _, child := range node {
-			changed = restoreAliasedToolNames(child, aliases) || changed
-		}
-	}
-	return changed
-}
-
 func rewriteSSEFrame(frame []byte, aliases map[string]string, maxOutputBytes int) ([]byte, bool, error) {
 	if len(frame) == 0 || len(aliases) == 0 {
 		return frame, false, nil
@@ -204,8 +326,16 @@ func rewriteSSEFrame(frame []byte, aliases map[string]string, maxOutputBytes int
 	data := make([][]byte, 0, 1)
 	firstPrefix := []byte(nil)
 	firstEnding := []byte(nil)
+	eventType := ""
 	for index, rawLine := range lines {
 		content, ending := splitSSELine(rawLine)
+		if bytes.HasPrefix(content, []byte("event:")) {
+			value := content[len("event:"):]
+			if len(value) > 0 && value[0] == ' ' {
+				value = value[1:]
+			}
+			eventType = string(value)
+		}
 		if !bytes.HasPrefix(content, []byte("data:")) {
 			continue
 		}
@@ -229,14 +359,26 @@ func rewriteSSEFrame(frame []byte, aliases map[string]string, maxOutputBytes int
 	if bytes.Equal(bytes.TrimSpace(joinedData), []byte("[DONE]")) {
 		return frame, false, nil
 	}
-	rewritten, changed, err := restoreToolNamesInJSON(joinedData, aliases, maxOutputBytes)
+	rewritten, changed, err := restoreToolNamesInSSEJSON(joinedData, aliases, maxOutputBytes, eventType)
 	if err != nil {
 		return nil, false, err
 	}
 	if !changed {
 		return frame, false, nil
 	}
+
+	removedDataBytes := int64(0)
+	for index := range dataIndexes {
+		removedDataBytes += int64(len(lines[index]))
+	}
+	replacementBytes := int64(len(firstPrefix) + len(rewritten) + len(firstEnding))
+	finalFrameBytes := int64(len(frame)) - removedDataBytes + replacementBytes
+	if maxOutputBytes < 0 || finalFrameBytes > int64(maxOutputBytes) {
+		return nil, false, errResponseRewriteLimit
+	}
+
 	var out bytes.Buffer
+	out.Grow(int(finalFrameBytes))
 	wroteData := false
 	for index, rawLine := range lines {
 		if !dataIndexes[index] {
@@ -250,6 +392,9 @@ func rewriteSSEFrame(frame []byte, aliases map[string]string, maxOutputBytes int
 		out.Write(rewritten)
 		out.Write(firstEnding)
 		wroteData = true
+	}
+	if out.Len() != int(finalFrameBytes) {
+		return nil, false, errResponseRewriteLimit
 	}
 	return out.Bytes(), true, nil
 }

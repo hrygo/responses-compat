@@ -529,9 +529,9 @@ func TestHandlerEmitsSSEErrorForExpandedEventOverRewriteLimit(t *testing.T) {
 	responseBody := expandedAliasResponse(alias, maxSSEFrameBytes/(1<<20)+1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "event: response.completed\ndata: ")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":")
 		_, _ = w.Write(responseBody)
-		_, _ = io.WriteString(w, "\n\ndata: [DONE]\n\n")
+		_, _ = io.WriteString(w, "}\n\ndata: [DONE]\n\n")
 	}))
 	defer upstream.Close()
 	base, _ := url.Parse(upstream.URL + "/v1")

@@ -53,7 +53,7 @@ func serveResponses(w http.ResponseWriter, r *http.Request, upstream *url.URL, c
 	}
 	payload, aliases, err := normalizeRequestWithToolNames(body)
 	if err != nil {
-		writeJSONError(w, http.StatusUnprocessableEntity, "invalid Muse Responses request")
+		writeJSONErrorWithCode(w, http.StatusUnprocessableEntity, "invalid Muse Responses request", normalizationCode(err))
 		return
 	}
 
@@ -165,12 +165,18 @@ func copyResponseHeaders(dst, src http.Header) {
 }
 
 func writeJSONError(w http.ResponseWriter, status int, message string) {
+	writeJSONErrorWithCode(w, status, message, "")
+}
+
+func writeJSONErrorWithCode(w http.ResponseWriter, status int, message, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]string{
-			"type":    "invalid_request_error",
-			"message": message,
-		},
-	})
+	detail := map[string]string{
+		"type":    "invalid_request_error",
+		"message": message,
+	}
+	if code != "" {
+		detail["code"] = code
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": detail})
 }

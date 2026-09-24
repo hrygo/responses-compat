@@ -145,11 +145,10 @@ func TestNormalizeRequestNestedCodexToolShapes(t *testing.T) {
 	}
 }
 
-func TestNormalizeRequestRejectsMissingExternalAndSiblingRefs(t *testing.T) {
+func TestNormalizeRequestRejectsMissingAndExternalRefs(t *testing.T) {
 	cases := map[string]string{
 		"missing":  `{"model":"muse-spark-1.3-contributor","tools":[{"type":"function","name":"f","parameters":{"$ref":"#/$defs/missing"}}]}`,
 		"external": `{"model":"muse-spark-1.3-contributor","tools":[{"type":"function","name":"f","parameters":{"$ref":"https://example.test/schema.json"}}]}`,
-		"siblings": `{"model":"muse-spark-1.3-contributor","tools":[{"type":"function","name":"f","parameters":{"$ref":"#/$defs/A","description":"keep sibling"}}]}`,
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {

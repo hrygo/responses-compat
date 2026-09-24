@@ -610,3 +610,65 @@ func TestHandlerRejectsPartialJSONWhenUpstreamReadFails(t *testing.T) {
 		t.Fatalf("status=%d alias_leaked=%v response_bytes=%d", resp.StatusCode, strings.Contains(string(got), alias), len(got))
 	}
 }
+
+func TestHandlerAcceptsSupportedRefSiblingsAndClassifiesConflict(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	forwarded := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read forwarded body: %v", err)
+		}
+		forwarded <- string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"completed"}`)
+	}))
+	defer upstream.Close()
+	base, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(NewHandler(base, upstream.Client()))
+	defer front.Close()
+
+	valid := `{"model":"muse-spark-1.3-contributor","tools":[{"type":"function","name":"example","parameters":{"properties":{"value":{"$ref":"#/$defs/Text","type":"string","description":"synthetic annotation"}},"$defs":{"Text":{"type":"string"}}}}]}`
+	response, err := front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("supported siblings status=%d", response.StatusCode)
+	}
+	var gotForwarded string
+	select {
+	case gotForwarded = <-forwarded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("valid request did not reach upstream")
+	}
+	if strings.Contains(gotForwarded, `"$ref"`) || !strings.Contains(gotForwarded, `"description":"synthetic annotation"`) {
+		t.Fatalf("unexpected forwarded request: %s", gotForwarded)
+	}
+
+	conflict := `{"model":"muse-spark-1.3-contributor","tools":[{"type":"function","name":"example","parameters":{"$ref":"#/$defs/Text","type":"number","$defs":{"Text":{"type":"string"}}}}]}`
+	response, err = front.Client().Post(front.URL+"/v1/responses", "application/json", strings.NewReader(conflict))
+	if err != nil {
+		t.Fatal(err)
+	}
+	errorBody, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if response.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(errorBody), `"code":"schema_ref_sibling_unsupported"`) {
+		t.Fatalf("status=%d body=%s", response.StatusCode, errorBody)
+	}
+	if strings.Contains(string(errorBody), "Text") || strings.Contains(string(errorBody), "number") || strings.Contains(string(errorBody), "$defs") {
+		t.Fatalf("internal schema details leaked: %s", errorBody)
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("upstream calls=%d want=1", got)
+	}
+}

@@ -193,23 +193,34 @@ func resolveJSONPointer(root any, ref string) (any, string, error) {
 	return current, canonical, nil
 }
 
-func expandRef(ref string, root any, active map[string]bool, depth int, budget *schemaBudget) (any, error) {
+func expandRefTarget(ref string, root any, active map[string]bool, depth int, budget *schemaBudget) (any, string, bool, error) {
 	if depth > maxSchemaDepth {
-		return nil, errors.New("schema depth exceeded")
+		return nil, "", false, errors.New("schema depth exceeded")
 	}
 	target, canonical, err := resolveJSONPointer(root, ref)
 	if err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
 	if active[canonical] {
 		if err := budget.add(2); err != nil {
-			return nil, err
+			return nil, "", false, err
 		}
-		return map[string]any{}, nil
+		return map[string]any{}, canonical, false, nil
 	}
 	active[canonical] = true
 	value, err := expandSchemaNode(target, root, active, depth+1, budget)
-	delete(active, canonical)
+	if err != nil {
+		delete(active, canonical)
+		return nil, "", false, err
+	}
+	return value, canonical, true, nil
+}
+
+func expandRef(ref string, root any, active map[string]bool, depth int, budget *schemaBudget) (any, error) {
+	value, canonical, entered, err := expandRefTarget(ref, root, active, depth, budget)
+	if entered {
+		delete(active, canonical)
+	}
 	return value, err
 }
 
@@ -219,17 +230,8 @@ func expandSchemaNode(value, root any, active map[string]bool, depth int, budget
 	}
 	switch node := value.(type) {
 	case map[string]any:
-		if rawRef, exists := node["$ref"]; exists {
-			ref, ok := rawRef.(string)
-			if !ok {
-				return nil, errors.New("schema reference must be a string")
-			}
-			for key := range node {
-				if key != "$ref" && key != "$defs" && key != "definitions" {
-					return nil, errors.New("schema reference node has unsupported siblings")
-				}
-			}
-			return expandRef(ref, root, active, depth+1, budget)
+		if _, exists := node["$ref"]; exists {
+			return expandRefWithSiblings(node, root, active, depth+1, budget)
 		}
 		out := make(map[string]any, len(node))
 		if err := budget.add(2); err != nil {

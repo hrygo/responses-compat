@@ -14,7 +14,7 @@
 
 **Evidence:** `docs/compatibility/2026-09-24-evidence-register.md`
 
-**Date / status:** 2026-09-24；可审阅的执行计划，尚未开始代码实施。用户此前要求稍后统一解决，本计划不撤销该边界。
+**Date / status:** 2026-09-24；实施中（分支 `codex/responses-compat`）。任务 1 已完成实现与验证；任务 2–6 待实施。真实上游、服务切换和发布仍受任务 7 授权门约束。
 
 ## Global Constraints
 
@@ -113,7 +113,7 @@ func normalizationCode(err error) string
 
 **Produces:** 本次相邻字段正常归一化，受控错误码；不改变监听或模型选择。
 
-- [ ] **1.1 保护现场并建立基线。** 检查 `git status --short`、README diff 和运行态元数据记录；在开始代码实施时创建 `codex/responses-compat` 分支。已有同名分支先检查，不覆盖。运行并记录：
+- [x] **1.1 保护现场并建立基线。** 检查 `git status --short`、README diff 和运行态元数据记录；在开始代码实施时创建 `codex/responses-compat` 分支。已有同名分支先检查，不覆盖。运行并记录：
 
 ```sh
 go test ./... -count=1
@@ -121,7 +121,7 @@ go test -race ./... -count=1
 go vet ./...
 ```
 
-- [ ] **1.2 先加入真实缺陷的合成回归。** 在 schema_refs_test.go 写入以下测试；它在当前版本必须因 unsupported siblings 失败。
+- [x] **1.2 先加入真实缺陷的合成回归。** 在 schema_refs_test.go 写入以下测试；它在当前版本必须因 unsupported siblings 失败。
 
 ```go
 package main
@@ -146,8 +146,8 @@ func TestRefSiblingConflictingTypeIsNotSilentlyOverwritten(t *testing.T) {
 }
 ```
 
-- [ ] **1.3 确认红灯。** 执行 `go test ./... -run 'TestRefSibling' -count=1`，记录第一项失败；不以第二项已通过代替红灯证明。
-- [ ] **1.4 修复引用相邻字段。** 保留当前 root 解析、深度和循环检测；展开目标后，只接受与目标完全同值的重复断言及 description/title/$comment 字符串注解。注解由相邻节点优先；不要修改引用目标原对象。其他新增/冲突断言返回固定的 schema_ref_sibling_unsupported，不误称其为非法 JSON Schema。实现中的判定应明确使用相等检查，而非对象浅合并：
+- [x] **1.3 确认红灯。** 执行 `go test ./... -run 'TestRefSibling' -count=1`，记录第一项失败；不以第二项已通过代替红灯证明。
+- [x] **1.4 修复引用相邻字段。** 保留当前 root 解析、深度和循环检测；展开目标后，只接受与目标完全同值的重复断言及 description/title/$comment 字符串注解。注解由相邻节点优先；不要修改引用目标原对象。其他新增/冲突断言返回固定的 schema_ref_sibling_unsupported，不误称其为非法 JSON Schema。实现中的判定应明确使用相等检查，而非对象浅合并：
 
 ```go
 // After the target and sibling values are normalized, both decoded with UseNumber:
@@ -164,8 +164,8 @@ return nil, &normalizationError{
 
 本段为分支逻辑；target/key/value 来自展开目标与相邻字段遍历。不得把“重复检查通过”扩展为任意相邻约束安全可合并。按最终输出计入新增注解和包围结构预算；超预算返回错误，不先创建无界序列化缓冲。
 
-- [ ] **1.5 错误分类与旧测试。** normalizationCode 使用 errors.As 提取固定 Code，未知情况返回 invalid_request；server.go 的本地 422 增加 code，但不拼接原始工具名、JSON Pointer、URL 或载荷。拆开 TestNormalizeRequestRejectsMissingExternalAndSiblingRefs：缺失和外部引用仍拒绝；有效目标加注解则保留。HTTP 测试必须断言本次请求到达 httptest 上游且不再返回 422，冲突请求仍拒绝且错误无载荷。
-- [ ] **1.6 绿灯并独立提交。** 运行回归、全量、race 和 vet；补测注解计入大小预算、输入定义未变。提交 `fix: accept supported schema reference siblings`，不要夹带更名或服务操作。
+- [x] **1.5 错误分类与旧测试。** normalizationCode 使用 errors.As 提取固定 Code，未知情况返回 invalid_request；server.go 的本地 422 增加 code，但不拼接原始工具名、JSON Pointer、URL 或载荷。拆开 TestNormalizeRequestRejectsMissingExternalAndSiblingRefs：缺失和外部引用仍拒绝；有效目标加注解则保留。HTTP 测试必须断言本次请求到达 httptest 上游且不再返回 422，冲突请求仍拒绝且错误无载荷。
+- [x] **1.6 绿灯并独立提交。** 运行回归、全量、race 和 vet；补测注解计入大小预算、输入定义未变。提交 `fix: accept supported schema reference siblings`，不要夹带更名或服务操作。
 
 ## Task 2：修正响应恢复范围和完整 SSE 预算
 
